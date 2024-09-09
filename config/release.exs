@@ -21,6 +21,10 @@ config :throttle, Throttle.Repo,
 # For development, we disable any cache and enable
 # debugging and code reloading.
 config :throttle, ThrottleWeb.Endpoint,
+  http: [
+      port: String.to_integer(System.get_env("PORT") || "4000"),
+      transport_options: [socket_opts: [:inet6]]
+  ],
   check_origin: false,
   secret_key_base: secret_key_base,
   url: [host: System.get_env("RENDER_EXTERNAL_HOSTNAME") || "localhost", port: 80],

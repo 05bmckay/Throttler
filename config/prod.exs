@@ -13,7 +13,10 @@ config :throttle, Throttle.Repo,
 # For development, we disable any cache and enable
 # debugging and code reloading.
 config :throttle, ThrottleWeb.Endpoint,
-  http: [ip: {127, 0, 0, 1}, port: 4000],
+  http: [
+      port: String.to_integer(System.get_env("PORT") || "4000"),
+      transport_options: [socket_opts: [:inet6]]
+  ],
   check_origin: false,
   debug_errors: true,
   secret_key_base: "MIk2Of0mNRCj42SSrjOexYPu8hYSCz0iQ3MEZMcWoAQ=",
