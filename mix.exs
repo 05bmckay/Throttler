@@ -42,6 +42,8 @@ defmodule Throttle.MixProject do
       {:plug_cowboy, "~> 2.5"},
       {:oban, "~> 2.10"},
       {:redix, "~> 1.1"},
+      {:sentry, "~> 10.2.0"},
+      {:hackney, "~> 1.8"},
       {:httpoison, "~> 1.8"},
       {:ex_doc, "~> 0.24", only: :dev, runtime: false}
     ]
