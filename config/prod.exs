@@ -20,7 +20,7 @@ config :throttle, ThrottleWeb.Endpoint,
   check_origin: false,
   debug_errors: true,
   secret_key_base: "MIk2Of0mNRCj42SSrjOexYPu8hYSCz0iQ3MEZMcWoAQ=",
-  url: [host: System.get_env("BASE_URL"), scheme: "https"],
+  url: [host: System.get_env("BASE_URL"), port: 443, scheme: "https"],
   watchers: []
 
 config :sentry,
