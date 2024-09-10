@@ -20,7 +20,7 @@ config :throttle, ThrottleWeb.Endpoint,
   check_origin: false,
   debug_errors: true,
   secret_key_base: "MIk2Of0mNRCj42SSrjOexYPu8hYSCz0iQ3MEZMcWoAQ=",
-  url: [host: System.get_env("RENDER_EXTERNAL_HOSTNAME") || "localhost", port: 80],
+  url: [host: System.get_env("RENDER_EXTERNAL_HOSTNAME") || "localhost", port: 80, scheme: "https"],
   watchers: []
 
 config :logger,
