@@ -93,9 +93,28 @@ defmodule Throttle.ThrottleWorker do
 
 
   #TODO switch the HTTP Call first and then Mark processed
-  defp process_with_token(executions, token) do
+  defp process_executions(executions) do
+      executions_by_portal = Enum.group_by(executions, &extract_portal_id/1)
+      Logger.info(fn -> "Processing executions for portals: #{inspect(Map.keys(executions_by_portal))}" end)
+
+      Repo.transaction(fn ->
+        Enum.each(executions_by_portal, fn {portal_id, portal_executions} ->
+          Logger.info(fn -> "Processing portal: #{portal_id}" end)
+          case OAuthManager.get_token(portal_id) do
+            {:ok, token} ->
+              Logger.info(fn -> "Token retrieved for portal #{portal_id}" end)
+              process_with_token(portal_executions, token)
+            {:error, reason} ->
+              Logger.error("Error getting token for portal #{portal_id}: #{inspect(reason)}", portal_id: portal_id)
+              Repo.rollback(reason)
+          end
+        end)
+      end)
+    end
+
+    defp process_with_token(executions, token) do
       Logger.info(fn -> "Processing with token for portal: #{token.portal_id}" end)
-      case send_batch_complete_with_retry(executions, token) do
+      case send_batch_complete_with_retry(executions, token.access_token) do
         :ok ->
           Logger.info(fn -> "Batch complete sent successfully" end)
           mark_actions_processed(Enum.map(executions, & &1.id))
@@ -106,59 +125,56 @@ defmodule Throttle.ThrottleWorker do
     end
 
     defp send_batch_complete_with_retry(executions, token, retries \\ 3) do
-      case send_batch_complete(executions, token.access_token) do
-        :ok -> :ok
-        {:error, :unauthorized} when retries > 0 ->
-          Logger.warning(fn -> "Unauthorized error, requesting new token (#{retries} retries left)" end)
-          case OAuthManager.request_new_token(token.portal_id) do
-            {:ok, new_token} ->
-              Logger.info(fn -> "New token obtained, retrying batch complete" end)
-              send_batch_complete_with_retry(executions, new_token, retries - 1)
-            error ->
-              Logger.error(fn -> "Failed to obtain new token: #{inspect(error)}" end)
-              error
-          end
-        error -> error
+        case send_batch_complete(executions, token.access_token) do
+          :ok -> :ok
+          {:error, :unauthorized} when retries > 0 ->
+            Logger.warning(fn -> "Unauthorized error, requesting new token (#{retries} retries left)" end)
+            case OAuthManager.request_new_token(token.portal_id) do
+              {:ok, new_token} ->
+                Logger.info(fn -> "New token obtained, retrying batch complete" end)
+                send_batch_complete_with_retry(executions, new_token, retries - 1)
+              error ->
+                Logger.error(fn -> "Failed to obtain new token: #{inspect(error)}" end)
+                error
+            end
+          error -> error
+        end
       end
-    end
 
-    defp send_batch_complete(executions, access_token) do
+  defp extract_portal_id(execution) do
+    execution.queue_id |> String.split(":") |> Enum.at(1) |> String.to_integer()
+  end
+
+  defp send_batch_complete(executions, access_token) do
       Logger.info(fn -> "Sending batch complete for #{length(executions)} executions" end)
       url = "https://api.hubapi.com/automation/v4/actions/callbacks/complete"
       headers = [
         {"Authorization", "Bearer #{access_token}"},
         {"Content-Type", "application/json"}
       ]
-      body = Jason.encode!(%{
-        inputs: Enum.map(executions, fn execution ->
-          %{
-            callbackId: execution.callback_id,
-            outputFields: %{hs_execution_state: "SUCCESS"}
-          }
-        end)
-      })
+    body = Jason.encode!(%{
+      inputs: Enum.map(executions, fn execution ->
+        %{
+          callbackId: execution.callback_id,
+          outputFields: %{hs_execution_state: "SUCCESS"}
+        }
+      end)
+    })
 
-      Logger.debug(fn -> "Request headers: #{inspect(headers)}" end)
-      Logger.debug(fn -> "Request body: #{inspect(body)}" end)
-
-      case HTTPoison.post(url, body, headers) do
-        {:ok, %{status_code: 204}} ->
-          Logger.info(fn -> "Batch complete request successful" end)
-          :ok
-        {:ok, %{status_code: 401}} ->
-          Logger.error(fn -> "Unauthorized error when sending batch complete request" end)
-          {:error, :unauthorized}
-        {:ok, response} ->
-          Logger.error(fn -> "API error when sending batch complete request: Status #{response.status_code}, Body: #{inspect(response.body)}" end)
-          {:error, {:api_error, response.status_code, response.body}}
-        {:error, error} ->
-          Logger.error(fn -> "HTTP error when sending batch complete request: #{inspect(error.reason)}" end)
-          {:error, {:http_error, error.reason}}
-      end
+    case HTTPoison.post(url, body, headers) do
+      {:ok, %{status_code: 204}} ->
+        Logger.debug("Batch complete request successful")
+        :ok
+      {:ok, %{status_code: 401}} ->
+        Logger.error("Unauthorized error when sending batch complete request")
+        {:error, :unauthorized}
+      {:ok, response} ->
+        Logger.error("API error when sending batch complete request: Status #{response.status_code}, Body: #{inspect(response.body)}")
+        {:error, {:api_error, response.status_code, response.body}}
+      {:error, error} ->
+        Logger.error("HTTP error when sending batch complete request: #{inspect(error.reason)}")
+        {:error, {:http_error, error.reason}}
     end
-
-  defp extract_portal_id(execution) do
-    execution.queue_id |> String.split(":") |> Enum.at(1) |> String.to_integer()
   end
 
   defp mark_actions_processed(action_ids) do
