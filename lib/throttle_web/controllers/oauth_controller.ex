@@ -14,7 +14,7 @@ defmodule ThrottleWeb.OAuthController do
     })
 
     authorize_url = "#{@hubspot_authorize_url}?#{query_params}"
-    json(conn, %{authorize_url: authorize_url})
+    redirect(conn, external: authorize_url)
   end
 
   def callback(conn, %{"code" => code}) do
