@@ -47,5 +47,5 @@ config :throttle, Oban,
 config :throttle,
   hubspot_client_id: System.get_env("HUBSPOT_CLIENT_ID"),
   hubspot_client_secret: System.get_env("HUBSPOT_CLIENT_SECRET"),
-  hubspot_redirect_uri: "https://throttler.cartermckay.com/api/oauth/callback",
+  hubspot_redirect_uri: "https://throttler-app.cartermckay.com/api/oauth/callback",
   encryption_key: System.get_env("ENCRYPTION_KEY")
