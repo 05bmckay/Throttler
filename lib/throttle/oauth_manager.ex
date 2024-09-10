@@ -109,38 +109,6 @@ defmodule Throttle.OAuthManager do
       |> Repo.update()
     end
 
-    def request_new_token(portal_id) do
-        Logger.info(fn -> "Requesting new token for portal: #{portal_id}" end)
-        case Repo.get_by(SecureOAuthToken, portal_id: portal_id) do
-          nil ->
-            Logger.error(fn -> "No token record found for portal: #{portal_id}" end)
-            {:error, :no_token_record}
-          token ->
-            decrypted_token = decrypt_token(token)
-            case do_refresh_token(decrypted_token) do
-              {:ok, new_token_data} ->
-                Logger.info(fn -> "New token obtained successfully for portal: #{portal_id}" end)
-                new_decrypted_token = %{decrypted_token |
-                  access_token: new_token_data["access_token"],
-                  refresh_token: new_token_data["refresh_token"],
-                  expires_at: calculate_expiration(new_token_data["expires_in"])
-                }
-                case update_token(new_decrypted_token) do
-                  {:ok, _} ->
-                    Logger.info(fn -> "New token updated in database for portal: #{portal_id}" end)
-                    {:ok, new_decrypted_token}
-                  {:error, reason} ->
-                    Logger.error(fn -> "Failed to update new token in database for portal #{portal_id}: #{inspect(reason)}" end)
-                    {:error, reason}
-                end
-              error ->
-                Logger.error(fn -> "Failed to obtain new token for portal #{portal_id}: #{inspect(error)}" end)
-                error
-            end
-        end
-      end
-
-
     defp encrypt_token(token) do
       %{token |
         access_token: Encryption.encrypt(token.access_token),

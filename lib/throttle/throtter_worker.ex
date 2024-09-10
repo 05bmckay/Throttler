@@ -124,19 +124,13 @@ defmodule Throttle.ThrottleWorker do
       end
     end
 
-    defp send_batch_complete_with_retry(executions, token, retries \\ 3) do
-        case send_batch_complete(executions, token.access_token) do
+    defp send_batch_complete_with_retry(executions, access_token, retries \\ 3) do
+        case send_batch_complete(executions, access_token) do
           :ok -> :ok
           {:error, :unauthorized} when retries > 0 ->
-            Logger.warning(fn -> "Unauthorized error, requesting new token (#{retries} retries left)" end)
-            case OAuthManager.request_new_token(token.portal_id) do
-              {:ok, new_token} ->
-                Logger.info(fn -> "New token obtained, retrying batch complete" end)
-                send_batch_complete_with_retry(executions, new_token, retries - 1)
-              error ->
-                Logger.error(fn -> "Failed to obtain new token: #{inspect(error)}" end)
-                error
-            end
+            Logger.warning(fn -> "Unauthorized error, retrying in 2 seconds (#{retries} retries left)" end)
+            :timer.sleep(2000)  # Wait for 2 seconds before retrying
+            send_batch_complete_with_retry(executions, access_token, retries - 1)
           error -> error
         end
       end
