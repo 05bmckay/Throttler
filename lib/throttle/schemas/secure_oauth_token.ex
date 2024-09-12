@@ -1,58 +1,50 @@
 defmodule Throttle.Schemas.SecureOAuthToken do
-  @moduledoc """
-  Schema for securely storing OAuth tokens. This uses encryption
-  to protect sensitive token data.
-  """
-
   use Ecto.Schema
   import Ecto.Changeset
-  alias Throttle.Encryption
+  require Logger
 
   schema "oauth_tokens" do
-    field(:portal_id, :integer)
-    field(:access_token, :string)
-    field(:refresh_token, :string)
-    field(:expires_at, :utc_datetime)
+    field :portal_id, :integer
+    field :access_token, :string
+    field :refresh_token, :string
+    field :expires_at, :utc_datetime
 
     timestamps()
   end
 
-  @doc """
-  Changeset function for SecureOAuthToken. This function also handles
-  encryption of sensitive fields.
-  """
   def changeset(token, attrs) do
     token
     |> cast(attrs, [:portal_id, :access_token, :refresh_token, :expires_at])
     |> validate_required([:portal_id, :access_token, :refresh_token, :expires_at])
     |> unique_constraint(:portal_id)
-    |> encrypt_tokens()
   end
 
-  @doc """
-  Decrypts the tokens in a SecureOAuthToken struct.
-  """
+  def update_changeset(token, attrs) do
+    token
+    |> cast(attrs, [:access_token, :refresh_token, :expires_at])
+    |> validate_required([:access_token, :refresh_token, :expires_at])
+  end
+
   def decrypt_tokens(token) do
-    %{
-      token
-      | access_token: Encryption.decrypt(token.access_token),
-        refresh_token: Encryption.decrypt(token.refresh_token)
-    }
+    access_token = case Throttle.Encryption.decrypt(token.access_token) do
+      {:ok, decrypted} -> decrypted
+      {:error, _} ->
+        Logger.warning("Failed to decrypt access token for portal #{token.portal_id}")
+        token.access_token
+    end
+    refresh_token = case Throttle.Encryption.decrypt(token.refresh_token) do
+      {:ok, decrypted} -> decrypted
+      {:error, _} ->
+        Logger.warning("Failed to decrypt refresh token for portal #{token.portal_id}")
+        token.refresh_token
+    end
+    %{token | access_token: access_token, refresh_token: refresh_token}
   end
 
   defp encrypt_tokens(changeset) do
-    case changeset do
-      %Ecto.Changeset{valid?: true, changes: changes} ->
-        changes =
-          changes
-          |> maybe_encrypt_field(:access_token)
-          |> maybe_encrypt_field(:refresh_token)
-
-        %{changeset | changes: changes}
-
-      _ ->
-        changeset
-    end
+    changeset
+    |> update_change(:access_token, &Encryption.encrypt/1)
+    |> update_change(:refresh_token, &Encryption.encrypt/1)
   end
 
   defp maybe_encrypt_field(changes, field) do

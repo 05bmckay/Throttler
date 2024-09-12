@@ -7,43 +7,26 @@ defmodule Throttle.ThrottleWorker do
 
   @impl Oban.Worker
   def perform(%Oban.Job{args: %{"queue_id" => queue_id, "max_throughput" => max_throughput, "time" => time, "period" => period}} = _job) do
-    result =
-      try do
-        case queue_active?(queue_id) do
-          {:ok, true} ->
-            case get_next_action_batch(queue_id, max_throughput) do
-              {:ok, executions} ->
-                case process_executions(executions) do
-                  :ok ->
-                    schedule_next_job(queue_id, max_throughput, time, period)
-                    :ok
-                  {:ok, :ok} ->
-                    schedule_next_job(queue_id, max_throughput, time, period)
-                    :ok
-                  {:error, reason} ->
-                    Logger.error("Error processing executions for queue #{queue_id}: #{inspect(reason)}")
-                    {:error, reason}
-                end
-
-              {:error, reason} ->
-                Logger.error("Error fetching batch for queue #{queue_id}: #{inspect(reason)}")
-                {:error, reason}
-            end
-          {:ok, false} ->
-            Logger.info("Queue #{queue_id} is inactive or empty, skipping processing")
-            {:error, :queue_inactive}
-          {:error, reason} ->
-            Logger.error("Error checking active status for queue #{queue_id}: #{inspect(reason)}")
-            {:error, reason}
-        end
-      rescue
-        e ->
-          Logger.error("Unexpected error processing queue #{queue_id}: #{inspect(e)}")
-          {:error, :unexpected_error}
-      end
+    result = with {:ok, true} <- queue_active?(queue_id),
+                  {:ok, executions} <- get_next_action_batch(queue_id, max_throughput),
+                  :ok <- process_executions(executions) do
+      schedule_next_job(queue_id, max_throughput, time, period)
+      :ok
+    else
+      {:ok, false} ->
+        Logger.info("Queue #{queue_id} is inactive or empty, skipping processing")
+        {:error, :queue_inactive}
+      {:error, reason} ->
+        Logger.error("Error processing queue #{queue_id}: #{inspect(reason)}")
+        {:error, reason}
+    end
 
     Logger.info("Finished processing queue: #{queue_id}, result: #{inspect(result)}")
     result
+  rescue
+    e ->
+      Logger.error("Unexpected error processing queue #{queue_id}: #{inspect(e)}")
+      {:error, :unexpected_error}
   end
 
   defp queue_active?(queue_id) do
@@ -94,46 +77,53 @@ defmodule Throttle.ThrottleWorker do
 
   #TODO switch the HTTP Call first and then Mark processed
   defp process_executions(executions) do
-      executions_by_portal = Enum.group_by(executions, &extract_portal_id/1)
-      Logger.info(fn -> "Processing executions for portals: #{inspect(Map.keys(executions_by_portal))}" end)
+    executions_by_portal = Enum.group_by(executions, &extract_portal_id/1)
+    Logger.info(fn -> "Processing executions for portals: #{inspect(Map.keys(executions_by_portal))}" end)
 
-      Repo.transaction(fn ->
-        Enum.each(executions_by_portal, fn {portal_id, portal_executions} ->
-          Logger.info(fn -> "Processing portal: #{portal_id}" end)
-          case OAuthManager.get_token(portal_id) do
-            {:ok, token} ->
-              Logger.info(fn -> "Token retrieved for portal #{portal_id}" end)
-              process_with_token(portal_executions, token)
+    Enum.reduce_while(executions_by_portal, :ok, fn {portal_id, portal_executions}, acc ->
+      Logger.info(fn -> "Processing portal: #{portal_id}" end)
+      case OAuthManager.get_token(portal_id) do
+        {:ok, token} ->
+          Logger.info(fn -> "Token retrieved for portal #{portal_id}" end)
+          case process_with_token(portal_executions, token) do
+            :ok -> {:cont, acc}
             {:error, reason} ->
-              Logger.error("Error getting token for portal #{portal_id}: #{inspect(reason)}", portal_id: portal_id)
-              Repo.rollback(reason)
+              Logger.error("Error processing with token for portal #{portal_id}: #{inspect(reason)}")
+              {:halt, {:error, reason}}
           end
-        end)
-      end)
-    end
-
-    defp process_with_token(executions, token) do
-      Logger.info(fn -> "Processing with token for portal: #{token.portal_id}" end)
-      case send_batch_complete_with_retry(executions, token.access_token) do
-        :ok ->
-          Logger.info(fn -> "Batch complete sent successfully" end)
-          mark_actions_processed(Enum.map(executions, & &1.id))
-        error ->
-          Logger.error(fn -> "Error sending batch complete: #{inspect(error)}" end)
-          Repo.rollback(error)
+        {:error, reason} ->
+          Logger.error("Error getting token for portal #{portal_id}: #{inspect(reason)}", portal_id: portal_id)
+          {:halt, {:error, reason}}
       end
-    end
+    end)
+  end
 
-    defp send_batch_complete_with_retry(executions, access_token, retries \\ 3) do
-        case send_batch_complete(executions, access_token) do
-          :ok -> :ok
-          {:error, :unauthorized} when retries > 0 ->
-            Logger.warning(fn -> "Unauthorized error, retrying in 2 seconds (#{retries} retries left)" end)
-            :timer.sleep(2000)  # Wait for 2 seconds before retrying
-            send_batch_complete_with_retry(executions, access_token, retries - 1)
-          error -> error
-        end
-      end
+  defp process_with_token(executions, token) do
+    Logger.info(fn -> "Processing with token for portal: #{token.portal_id}" end)
+    case send_batch_complete_with_retry(executions, token.access_token) do
+      :ok ->
+        Logger.info(fn -> "Batch complete sent successfully" end)
+        mark_actions_processed(Enum.map(executions, & &1.id))
+        :ok
+      error ->
+        Logger.error(fn -> "Error sending batch complete: #{inspect(error)}" end)
+        {:error, error}
+    end
+  end
+
+  defp send_batch_complete_with_retry(executions, access_token, retries \\ 3) do
+    case send_batch_complete(executions, access_token) do
+      :ok -> :ok
+      {:error, :unauthorized} when retries > 0 ->
+        Logger.warning(fn -> "Unauthorized error, retrying in 2 seconds (#{retries} retries left)" end)
+        :timer.sleep(2000)  # Wait for 2 seconds before retrying
+        send_batch_complete_with_retry(executions, access_token, retries - 1)
+      {:error, :unauthorized} ->
+        {:error, :max_retries_reached}
+      error -> error
+    end
+  end
+
 
   defp extract_portal_id(execution) do
     execution.queue_id |> String.split(":") |> Enum.at(1) |> String.to_integer()

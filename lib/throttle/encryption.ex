@@ -3,6 +3,7 @@ defmodule Throttle.Encryption do
   The Encryption module handles encryption and decryption of sensitive data.
   """
 
+  require Logger
   @aes_block_size 16
 
   def encrypt(plaintext) do
@@ -13,11 +14,23 @@ defmodule Throttle.Encryption do
   end
 
   def decrypt(ciphertext) do
-    {:ok, decoded} = Base.decode64(ciphertext)
-    <<iv::binary-@aes_block_size, ciphertext::binary>> = decoded
-    key = encryption_key()
-    plaintext = :crypto.crypto_one_time(:aes_256_cbc, key, iv, ciphertext, false)
-    unpad(plaintext)
+    try do
+      {:ok, decoded} = Base.decode64(ciphertext)
+      <<iv::binary-@aes_block_size, ciphertext::binary>> = decoded
+      key = encryption_key()
+      plaintext = :crypto.crypto_one_time(:aes_256_cbc, key, iv, ciphertext, false)
+      {:ok, unpad(plaintext)}
+    rescue
+      e ->
+        Logger.error("Decryption failed: #{inspect(e)}")
+        Logger.error("Ciphertext: #{inspect(ciphertext)}")
+        {:error, :decryption_failed}
+    catch
+      :error, :function_clause ->
+        Logger.error("Decryption failed: Invalid padding")
+        Logger.error("Ciphertext: #{inspect(ciphertext)}")
+        {:error, :invalid_padding}
+    end
   end
 
   defp pad(data) do
