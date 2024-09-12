@@ -7,27 +7,42 @@ defmodule Throttle.ThrottleWorker do
 
   @impl Oban.Worker
   def perform(%Oban.Job{args: %{"queue_id" => queue_id, "max_throughput" => max_throughput, "time" => time, "period" => period}} = _job) do
-    result = with {:ok, true} <- queue_active?(queue_id),
-                  {:ok, executions} <- get_next_action_batch(queue_id, max_throughput),
-                  :ok <- process_executions(executions) do
-      schedule_next_job(queue_id, max_throughput, time, period)
-      :ok
-    else
-      {:ok, false} ->
-        Logger.info("Queue #{queue_id} is inactive or empty, skipping processing")
-        {:error, :queue_inactive}
-      {:error, reason} ->
-        Logger.error("Error processing queue #{queue_id}: #{inspect(reason)}")
-        {:error, reason}
-    end
-
-    Logger.info("Finished processing queue: #{queue_id}, result: #{inspect(result)}")
-    result
-  rescue
-    e ->
-      Logger.error("Unexpected error processing queue #{queue_id}: #{inspect(e)}")
-      {:error, :unexpected_error}
-  end
+     result =
+       try do
+         case queue_active?(queue_id) do
+           {:ok, true} ->
+             case get_next_action_batch(queue_id, max_throughput) do
+               {:ok, executions} ->
+                 case process_executions(executions) do
+                   :ok ->
+                     schedule_next_job(queue_id, max_throughput, time, period)
+                     :ok
+                   {:ok, :ok} ->
+                     schedule_next_job(queue_id, max_throughput, time, period)
+                     :ok
+                   {:error, reason} ->
+                     Logger.error("Error processing executions for queue #{queue_id}: #{inspect(reason)}")
+                     {:error, reason}
+                 end
+               {:error, reason} ->
+                 Logger.error("Error fetching batch for queue #{queue_id}: #{inspect(reason)}")
+                 {:error, reason}
+             end
+           {:ok, false} ->
+             Logger.info("Queue #{queue_id} is inactive or empty, skipping processing")
+             {:error, :queue_inactive}
+           {:error, reason} ->
+             Logger.error("Error checking active status for queue #{queue_id}: #{inspect(reason)}")
+             {:error, reason}
+         end
+       rescue
+         e ->
+           Logger.error("Unexpected error processing queue #{queue_id}: #{inspect(e)}")
+           {:error, :unexpected_error}
+       end
+     Logger.info("Finished processing queue: #{queue_id}, result: #{inspect(result)}")
+     result
+   end
 
   defp queue_active?(queue_id) do
     Logger.debug("Checking if queue #{queue_id} is active")
