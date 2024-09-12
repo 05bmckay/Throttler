@@ -48,24 +48,22 @@ defmodule Throttle.ThrottleWorker do
     Logger.debug("Checking if queue #{queue_id} is active")
 
     query = from(a in ActionExecution,
-                 where: a.queue_id == ^queue_id and not a.processed,
-                 order_by: [desc: :inserted_at],
-                 limit: 1,
-                 select: a.inserted_at)
+                  where: a.queue_id == ^queue_id,
+                  where: not a.processed,
+                  order_by: [desc: a.inserted_at],
+                  select: a.inserted_at,
+                  limit: 1)
 
     case Repo.one(query) do
       nil ->
         Logger.debug("No active executions found for queue #{queue_id}")
         {:ok, false}
-
-      timestamp ->
-        # Convert NaiveDateTime to DateTime in UTC
-        datetime = DateTime.from_naive!(timestamp, "Etc/UTC")
-        is_active = DateTime.diff(DateTime.utc_now(), datetime) <= 4 * 3600
-        Logger.debug("Queue #{queue_id} active status: #{is_active}, last execution at: #{NaiveDateTime.to_string(timestamp)}")
-        {:ok, is_active}
+      _ ->
+        Logger.debug("Active executions found for queue #{queue_id}")
+        {:ok, true}
     end
   end
+
 
   defp get_next_action_batch(queue_id, max_throughput) do
     throughput = String.to_integer(max_throughput)
