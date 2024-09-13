@@ -69,7 +69,6 @@ defmodule Throttle.OAuthManager do
       token ->
         Logger.info("Token found for portal: #{portal_id}")
         decrypted_token = SecureOAuthToken.decrypt_tokens(token)
-        Logger.debug("Decrypted token: #{inspect(decrypted_token, pretty: true)}")
         if token_expired?(decrypted_token) or token_expiring_soon?(decrypted_token) do
           Logger.info("Token expired or expiring soon for portal: #{portal_id}, refreshing")
           case refresh_token(decrypted_token) do
@@ -89,11 +88,9 @@ defmodule Throttle.OAuthManager do
 
   def refresh_token(token) do
     Logger.info("Refreshing token for portal: #{token.portal_id}")
-    Logger.debug("Token before refresh: #{inspect(token, pretty: true)}")
     case do_refresh_token(token) do
       {:ok, new_token_data} ->
         Logger.info("Token refreshed successfully for portal: #{token.portal_id}")
-        Logger.debug("New token data: #{inspect(new_token_data, pretty: true)}")
         new_attrs = %{
           access_token: new_token_data["access_token"],
           refresh_token: new_token_data["refresh_token"],
@@ -103,7 +100,6 @@ defmodule Throttle.OAuthManager do
           {:ok, updated_token} ->
             Logger.info("Token updated in database for portal: #{token.portal_id}")
             decrypted_token = SecureOAuthToken.decrypt_tokens(updated_token)
-            Logger.debug("Decrypted token: #{inspect(decrypted_token, pretty: true)}")
             {:ok, decrypted_token}
           {:error, reason} ->
             Logger.error("Failed to update token in database for portal #{token.portal_id}: #{inspect(reason)}")
@@ -142,30 +138,28 @@ defmodule Throttle.OAuthManager do
   end
   defp is_encrypted?(_), do: false
 
-  defp encrypt_token(token) do
-    Logger.debug("Encrypting token for portal: #{token.portal_id}")
-    encrypted = %{token |
-      access_token: Encryption.encrypt(token.access_token),
-      refresh_token: Encryption.encrypt(token.refresh_token)
-    }
-    Logger.debug("Token encrypted")
-    encrypted
-  end
+  # defp encrypt_token(token) do
+  #   Logger.debug("Encrypting token for portal: #{token.portal_id}")
+  #   encrypted = %{token |
+  #     access_token: Encryption.encrypt(token.access_token),
+  #     refresh_token: Encryption.encrypt(token.refresh_token)
+  #   }
+  #   Logger.debug("Token encrypted")
+  #   encrypted
+  # end
 
-  defp decrypt_token(token) do
-    Logger.debug("Decrypting token for portal: #{token.portal_id}")
-    decrypted = %{token |
-      access_token: Encryption.decrypt(token.access_token),
-      refresh_token: Encryption.decrypt(token.refresh_token)
-    }
-    Logger.debug("Token decrypted")
-    decrypted
-  end
+  # defp decrypt_token(token) do
+  #   Logger.debug("Decrypting token for portal: #{token.portal_id}")
+  #   decrypted = %{token |
+  #     access_token: Encryption.decrypt(token.access_token),
+  #     refresh_token: Encryption.decrypt(token.refresh_token)
+  #   }
+  #   Logger.debug("Token decrypted")
+  #   decrypted
+  # end
 
   def token_expired?(token) do
     is_expired = DateTime.compare(token.expires_at, DateTime.utc_now()) == :lt
-    Logger.info("Token expiration check for portal #{token.portal_id}: #{is_expired}")
-    Logger.debug("Token expires at: #{token.expires_at}, Current time: #{DateTime.utc_now()}")
     Logger.debug("Token will expire in: #{DateTime.diff(token.expires_at, DateTime.utc_now(), :second)} seconds")
     is_expired
   end
@@ -192,7 +186,6 @@ defmodule Throttle.OAuthManager do
       {:ok, %HTTPoison.Response{status_code: 200, body: resp_body}} ->
         Logger.info("Token refresh successful")
         decoded_body = Jason.decode!(resp_body)
-        Logger.debug("Decoded response: #{inspect(decoded_body, pretty: true)}")
         {:ok, decoded_body}
 
       {:ok, %HTTPoison.Response{status_code: status_code, body: resp_body}} ->
