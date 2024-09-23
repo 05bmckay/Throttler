@@ -2,16 +2,22 @@
 
 ## Overview
 
-Throttle is an Elixir Phoenix application that implements a custom HubSpot workflow action for throttling requests. It uses Redis for queue management and PostgreSQL for storing OAuth tokens, action executions, and throttle configurations.
+Throttle is an Elixir Phoenix application designed to implement custom HubSpot workflow actions, specifically for throttling requests. This repository serves as a robust template for building out other HubSpot Workflow action backends, handling common tasks such as catching webhooks, managing OAuth tokens, and processing background jobs.
+
+### Why Use This Repository?
+
+1. **Comprehensive Setup**: Includes everything needed to get started with HubSpot workflow actions, from OAuth management to webhook handling.
+2. **Scalable Architecture**: Built with Elixir and Phoenix, known for their concurrency and fault-tolerance, making it ideal for high-throughput applications.
+3. **Extensible**: Easily extendable to add more workflow actions or integrate with other services.
+4. **Best Practices**: Implements best practices for security, logging, and error handling.
 
 ## System Components
 
 1. **Phoenix Web Interface**: Handles incoming requests from HubSpot and provides API endpoints for managing throttle configurations.
 2. **Throttle Core**: Manages the business logic for throttling, including queue management and action execution.
 3. **OAuth Manager**: Handles secure storage and retrieval of OAuth tokens.
-4. **Redis Manager**: Interfaces with Redis for queue management.
-5. **Database (PostgreSQL)**: Stores OAuth tokens, action executions, and throttle configurations.
-6. **Oban**: Manages background job processing for executing throttled actions.
+4. **Database (PostgreSQL)**: Stores OAuth tokens, action executions, and throttle configurations.
+5. **Oban**: Manages background job processing for executing throttled actions.
 
 ## Prerequisites
 
@@ -19,130 +25,93 @@ Throttle is an Elixir Phoenix application that implements a custom HubSpot workf
 - Erlang 23+
 - Phoenix 1.5+
 - PostgreSQL 12+
-- Redis 6+
 - HubSpot developer account and app
 
 ## Setup Guide
 
 Follow these steps to set up the Throttle application in a new environment:
 
-1. **Clone the repository:**
-   ```
-   git clone https://github.com/yourusername/throttle.git
-   cd throttle
-   ```
+### 1. Clone the Repository
+```sh
+git clone https://github.com/yourusername/throttle.git
+cd throttle
+```
 
-2. **Install dependencies:**
-   ```
-   mix deps.get
-   ```
+### 2. Install Dependencies
+```sh
+mix deps.get
+```
 
-3. **Set up environment variables:**
-   Create a `.env` file in the project root with the following content:
-   ```
-   export SECRET_KEY_BASE=<generate-with-mix-phx-gen-secret>
-   export DATABASE_URL=ecto://USER:PASS@HOST/DATABASE
-   export REDIS_URL=redis://localhost:6379
-   export HUBSPOT_CLIENT_ID=your_hubspot_client_id
-   export HUBSPOT_CLIENT_SECRET=your_hubspot_client_secret
-   export ENCRYPTION_KEY=<32-byte-encryption-key>
-   ```
-   Source the file:
-   ```
-   source .env
-   ```
+### 3. Set Up Environment Variables
+Create a `.env` file in the project root with the following content:
+```sh
+export SECRET_KEY_BASE=<generate-with-mix-phx-gen-secret>
+export DATABASE_URL=ecto://USER:PASS@HOST/DATABASE
+export HUBSPOT_CLIENT_ID=your_hubspot_client_id
+export HUBSPOT_CLIENT_SECRET=your_hubspot_client_secret
+export ENCRYPTION_KEY=<32-byte-encryption-key>
+```
+Source the file:
+```sh
+source .env
+```
 
-4. **Create and migrate the database:**
-   ```
-   mix ecto.create
-   mix ecto.migrate
-   ```
+### 4. Create and Migrate the Database
+```sh
+mix ecto.create
+mix ecto.migrate
+```
 
-5. **Start the Phoenix server:**
-   ```
-   mix phx.server
-   ```
+### 5. Start the Phoenix Server
+```sh
+mix phx.server
+```
 
-6. **Set up HubSpot app:**
-   - Create a new app in your HubSpot developer account
-   - Set up a custom workflow action pointing to your Throttle application's endpoint (e.g., `https://your-app-url.com/api/hubspot/action`)
-   - Configure the necessary scopes for your app
+### 6. Set Up HubSpot App
+- Create a new app in your HubSpot developer account.
+- Set up a custom workflow action pointing to your Throttle application's endpoint (e.g., `https://your-app-url.com/api/hubspot/action`).
+- Configure the necessary scopes for your app.
 
-7. **Configure throttle settings:**
-   Use the `/api/config` endpoint to set up throttle configurations for different HubSpot portals and actions.
+### 7. Configure Throttle Settings
+Use the `/api/config` endpoint to set up throttle configurations for different HubSpot portals and actions.
 
 ## API Endpoints
 
-- `POST /api/hubspot/action`: Receives actions from HubSpot
-- `POST /api/config`: Creates or updates a throttle configuration
-- `GET /api/config/:portal_id/:action_id`: Retrieves a throttle configuration
+- `POST /api/hubspot/action`: Receives actions from HubSpot.
+- `POST /api/config`: Creates or updates a throttle configuration.
+- `GET /api/config/:portal_id/:action_id`: Retrieves a throttle configuration.
 
 ## Development
 
-1. **Running tests:**
-   ```
-   mix test
-   ```
+### Running Tests
+```sh
+mix test
+```
 
-2. **Starting an IEx session with the application:**
-   ```
-   iex -S mix phx.server
-   ```
+### Starting an IEx Session with the Application
+```sh
+iex -S mix phx.server
+```
 
-3. **Generating documentation:**
-   ```
-   mix docs
-   ```
+### Generating Documentation
+```sh
+mix docs
+```
 
 ## Deployment
 
-1. **Build a release:**
-   ```
-   MIX_ENV=prod mix release
-   ```
+### Build a Release
+```sh
+MIX_ENV=prod mix release
+```
 
-2. **Deploy the release to your server**
+### Deploy the Release to Your Server
 
-3. **Set up environment variables on your server**
+### Set Up Environment Variables on Your Server
 
-4. **Run database migrations:**
-   ```
-   _build/prod/rel/throttle/bin/throttle eval "Throttle.Release.migrate"
-   ```
+## Conclusion
 
-5. **Start the application:**
-   ```
-   _build/prod/rel/throttle/bin/throttle start
-   ```
-
-## Monitoring and Maintenance
-
-- Monitor Redis for queue health and performance
-- Check PostgreSQL for action execution history and OAuth token status
-- Use Oban's dashboard for job processing insights
-- Implement logging and error tracking for production environments
-
-## Troubleshooting
-
-- Check application logs for error messages
-- Verify Redis connection and queue status
-- Ensure database migrations are up to date
-- Validate HubSpot app configuration and OAuth token validity
-
-## Security Considerations
-
-- OAuth tokens are encrypted at rest in the database
-- All sensitive configuration is managed through environment variables
-- Regularly rotate encryption keys and HubSpot client secrets
-- Ensure all communication uses HTTPS
-
-## Contributing
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
+Throttle provides a solid foundation for building HubSpot workflow action backends. By leveraging Elixir and Phoenix, it ensures high performance and scalability. Use this repository as a template to quickly get started with your own custom HubSpot workflow actions, handling everything from OAuth to webhook processing with ease.
 
 ## License
 
