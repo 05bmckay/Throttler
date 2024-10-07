@@ -1,5 +1,5 @@
 defmodule Throttle.OAuthManager do
-  alias Throttle.{Repo, Schemas.SecureOAuthToken, Encryption}
+  alias Throttle.{Repo, Schemas.SecureOAuthToken}
   require Logger
   # import Ecto.Query
 

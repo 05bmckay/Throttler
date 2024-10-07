@@ -41,16 +41,4 @@ defmodule Throttle.Schemas.SecureOAuthToken do
     %{token | access_token: access_token, refresh_token: refresh_token}
   end
 
-  defp encrypt_tokens(changeset) do
-    changeset
-    |> update_change(:access_token, &Encryption.encrypt/1)
-    |> update_change(:refresh_token, &Encryption.encrypt/1)
-  end
-
-  # defp maybe_encrypt_field(changes, field) do
-  #   case Map.get(changes, field) do
-  #     nil -> changes
-  #     value -> Map.put(changes, field, Encryption.encrypt(value))
-  #   end
-  # end
 end

@@ -3,13 +3,9 @@ defmodule Throttle.Application do
   The main application module for Throttle.
   This module is responsible for starting and supervising all the necessary processes.
   """
-
   use Application
 
   def start(_type, _args) do
-    :logger.add_handler(:my_sentry_handler, Sentry.LoggerHandler, %{
-        config: %{metadata: [:file, :line]}
-    })
     children = [
       # Start the Ecto repository
       Throttle.Repo,
@@ -19,9 +15,14 @@ defmodule Throttle.Application do
       {Phoenix.PubSub, name: Throttle.PubSub},
       # Start the Endpoint (http/https)
       ThrottleWeb.Endpoint,
+      # Start the ActionBatcher
       Throttle.ActionBatcher,
       # Start Oban
-      {Oban, Application.get_env(:throttle, Oban)}
+      {Oban, Application.get_env(:throttle, Oban)},
+      # Start Registry for portal queues
+      {Registry, keys: :unique, name: Throttle.PortalRegistry},
+      # Start DynamicSupervisor for portal queues
+      {DynamicSupervisor, strategy: :one_for_one, name: Throttle.PortalQueueSupervisor}
     ]
 
     opts = [strategy: :one_for_one, name: Throttle.Supervisor]

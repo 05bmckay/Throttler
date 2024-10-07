@@ -1,7 +1,7 @@
 defmodule Throttle.ThrottleWorker do
   use Oban.Worker, queue: :default, max_attempts: 3
   require Logger
-  alias Throttle.{Repo, OAuthManager}
+  alias Throttle.Repo
   alias Throttle.Schemas.ActionExecution
   import Ecto.Query
 
@@ -91,49 +91,55 @@ defmodule Throttle.ThrottleWorker do
   #TODO switch the HTTP Call first and then Mark processed
   defp process_executions(executions) do
     executions_by_portal = Enum.group_by(executions, &extract_portal_id/1)
-    Logger.info(fn -> "Processing executions for portals: #{inspect(Map.keys(executions_by_portal))}" end)
-
-    Enum.reduce_while(executions_by_portal, :ok, fn {portal_id, portal_executions}, acc ->
-      Logger.info(fn -> "Processing portal: #{portal_id}" end)
-      case OAuthManager.get_token(portal_id) do
-        {:ok, token} ->
-          Logger.info(fn -> "Token retrieved for portal #{portal_id}" end)
-          case process_with_token(portal_executions, token) do
-            :ok -> {:cont, acc}
-            {:error, reason} ->
-              Logger.error("Error processing with token for portal #{portal_id}: #{inspect(reason)}")
-              {:halt, {:error, reason}}
-          end
-        {:error, reason} ->
-          Logger.error("Error getting token for portal #{portal_id}: #{inspect(reason)}", portal_id: portal_id)
-          {:halt, {:error, reason}}
-      end
+    Enum.each(executions_by_portal, fn {portal_id, portal_executions} ->
+      # Start the portal queue if not already started
+      start_portal_queue(portal_id)
+      # Enqueue executions into the portal queue
+      Throttle.PortalQueue.enqueue_executions(portal_id, portal_executions)
     end)
+    :ok
   end
 
-  defp process_with_token(executions, token) do
-    Logger.info(fn -> "Processing with token for portal: #{token.portal_id}" end)
+  defp start_portal_queue(portal_id) do
+    case Registry.lookup(Throttle.PortalRegistry, portal_id) do
+      [] ->
+        # Start the GenServer for the portal
+        DynamicSupervisor.start_child(Throttle.PortalQueueSupervisor, {Throttle.PortalQueue, portal_id})
+      _ ->
+        :ok
+    end
+  end
+
+  def process_with_token(executions, token) do
+    Logger.info("Processing with token for portal: #{token.portal_id}")
     case send_batch_complete_with_retry(executions, token.access_token) do
       :ok ->
-        Logger.info(fn -> "Batch complete sent successfully" end)
+        Logger.info("Batch complete sent successfully")
         mark_actions_processed(Enum.map(executions, & &1.id))
         :ok
       error ->
-        Logger.error(fn -> "Error sending batch complete: #{inspect(error)}" end)
-        {:error, error}
+        Logger.error("Error sending batch complete: #{inspect(error)}")
+        error
     end
   end
 
   defp send_batch_complete_with_retry(executions, access_token, retries \\ 3) do
     case send_batch_complete(executions, access_token) do
       :ok -> :ok
-      {:error, :unauthorized} when retries > 0 ->
-        Logger.warning(fn -> "Unauthorized error, retrying in 2 seconds (#{retries} retries left)" end)
-        :timer.sleep(2000)  # Wait for 2 seconds before retrying
+      {:error, {:rate_limited, retry_after}} when retries > 0 ->
+        Logger.warning(fn ->
+          "Rate limited by HubSpot API, retrying in #{retry_after} seconds (#{retries} retries left)"
+        end)
+        :timer.sleep(retry_after * 1000)
         send_batch_complete_with_retry(executions, access_token, retries - 1)
-      {:error, :unauthorized} ->
-        {:error, :max_retries_reached}
-      error -> error
+      {:error, reason} when retries > 0 ->
+        Logger.warning(fn ->
+          "Error occurred: #{inspect(reason)}, retrying (#{retries} retries left)"
+        end)
+        :timer.sleep(2000)
+        send_batch_complete_with_retry(executions, access_token, retries - 1)
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -143,36 +149,41 @@ defmodule Throttle.ThrottleWorker do
   end
 
   defp send_batch_complete(executions, access_token) do
-      Logger.info(fn -> "Sending batch complete for #{length(executions)} executions" end)
-      url = "https://api.hubapi.com/automation/v4/actions/callbacks/complete"
-      headers = [
-        {"Authorization", "Bearer #{access_token}"},
-        {"Content-Type", "application/json"}
-      ]
-    body = Jason.encode!(%{
-      inputs: Enum.map(executions, fn execution ->
-        %{
-          callbackId: execution.callback_id,
-          outputFields: %{hs_execution_state: "SUCCESS"}
-        }
-      end)
-    })
 
-    case HTTPoison.post(url, body, headers) do
-      {:ok, %{status_code: 204}} ->
-        Logger.debug("Batch complete request successful")
-        :ok
-      {:ok, %{status_code: 401}} ->
-        Logger.error("Unauthorized error when sending batch complete request")
-        {:error, :unauthorized}
-      {:ok, response} ->
-        Logger.error("API error when sending batch complete request: Status #{response.status_code}, Body: #{inspect(response.body)}")
-        {:error, {:api_error, response.status_code, response.body}}
-      {:error, error} ->
-        Logger.error("HTTP error when sending batch complete request: #{inspect(error.reason)}")
-        {:error, {:http_error, error.reason}}
-    end
-  end
+    Logger.info(fn -> "Sending batch complete for #{length(executions)} executions" end)
+    url = "https://api.hubapi.com/automation/v4/actions/callbacks/complete"
+
+     # Prepare the request as before
+     body = Jason.encode!(%{
+       inputs: Enum.map(executions, fn execution ->
+         %{
+           callbackId: execution.callback_id,
+           outputFields: %{hs_execution_state: "SUCCESS"}
+         }
+       end)
+     })
+
+     headers = [
+       {"Authorization", "Bearer #{access_token}"},
+       {"Content-Type", "application/json"}
+     ]
+
+     case HTTPoison.post(url, body, headers) do
+       {:ok, %{status_code: 204}} ->
+         Logger.debug("Batch complete request successful")
+         :ok
+       {:ok, %{status_code: 429, headers: response_headers}} ->
+         retry_after = extract_retry_after(response_headers) || 60
+         Logger.error("Rate limited by HubSpot API, retry after #{retry_after} seconds")
+         {:error, {:rate_limited, retry_after}}
+       {:ok, response} ->
+         Logger.error("API error: Status #{response.status_code}, Body: #{inspect(response.body)}")
+         {:error, {:api_error, response.status_code, response.body}}
+       {:error, error} ->
+         Logger.error("HTTP error: #{inspect(error.reason)}")
+         {:error, {:http_error, error.reason}}
+     end
+   end
 
   defp mark_actions_processed(action_ids) do
     {_count, _} = from(a in ActionExecution, where: a.id in ^action_ids)
@@ -204,5 +215,13 @@ defmodule Throttle.ThrottleWorker do
         Logger.warning("ThrottleWorker: Invalid period #{period}, defaulting to seconds")
         time
     end
+  end
+
+  defp extract_retry_after(headers) do
+    headers
+    |> Enum.find_value(fn
+      {"Retry-After", value} -> String.to_integer(value)
+      _ -> nil
+    end)
   end
 end

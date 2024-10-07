@@ -22,10 +22,9 @@ config :logger, :console,
 # Use Jason for JSON parsing in Phoenix
 config :phoenix, :json_library, Jason
 
+import_config "#{config_env()}.exs"
+
 config :throttle, Oban,
   repo: Throttle.Repo,
   plugins: [Oban.Plugins.Pruner],
-  queues: [default: 10]
-
-# Remove the following lines if present
-# config :throttle, :redis_url, System.get_env("REDIS_URL")
+  queues: [default: 10, rate_limited: 1]
