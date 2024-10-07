@@ -87,8 +87,6 @@ defmodule Throttle.ThrottleWorker do
     :ok
   end
 
-
-  #TODO switch the HTTP Call first and then Mark processed
   defp process_executions(executions) do
     executions_by_portal = Enum.group_by(executions, &extract_portal_id/1)
     Enum.each(executions_by_portal, fn {portal_id, portal_executions} ->

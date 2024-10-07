@@ -1,7 +1,6 @@
 defmodule Throttle.PortalQueue do
   use GenServer
   require Logger
-  alias Throttle.OAuthManager
 
   @flush_interval 1_000   # Flush after 1 second
   @max_batch_size 100     # Flush if queue reaches 100 actions
@@ -31,6 +30,9 @@ defmodule Throttle.PortalQueue do
     new_queue = Enum.reduce(executions, state.queue, fn execution, queue ->
       :queue.in(execution, queue)
     end)
+
+    Logger.debug("Queue after enqueue: #{inspect(new_queue)}")
+
     state = %{state | queue: new_queue}
     state = maybe_schedule_flush(state)
     state = maybe_flush(state)
@@ -75,9 +77,22 @@ defmodule Throttle.PortalQueue do
   end
 
   defp dequeue_batch(queue) do
-    {batch_queue, remaining_queue} = :queue.split(@max_batch_size, queue)
-    batch = :queue.to_list(batch_queue)
-    {batch, remaining_queue}
+    Logger.debug("Queue before dequeuing: #{inspect(queue)}")
+    {batch, remaining_queue} = dequeue_batch_elements(queue, @max_batch_size, [])
+    {Enum.reverse(batch), remaining_queue}
+  end
+
+  defp dequeue_batch_elements(queue, 0, acc) do
+    {acc, queue}
+  end
+
+  defp dequeue_batch_elements(queue, n, acc) do
+    case :queue.out(queue) do
+      {{:value, item}, queue_tail} ->
+        dequeue_batch_elements(queue_tail, n - 1, [item | acc])
+      {:empty, _} ->
+        {acc, queue}
+    end
   end
 
   defp send_batch(portal_id, executions) do
@@ -90,7 +105,6 @@ defmodule Throttle.PortalQueue do
         end
       {:error, reason} ->
         Logger.error("Error getting token for portal #{portal_id}: #{inspect(reason)}")
-        # Optionally handle re-queuing or error notification
     end
   end
 
