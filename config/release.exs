@@ -36,8 +36,7 @@ config :sentry,
   enable_source_code_context: true,
   root_source_code_paths: [File.cwd!()]
 
-config :logger,
-  level: :debug
+config :logger, level: :warn
 
 config :logger, :console,
   format: "$time $metadata[$level] $message\n",

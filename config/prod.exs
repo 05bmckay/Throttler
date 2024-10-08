@@ -30,7 +30,7 @@ config :sentry,
   root_source_code_paths: [File.cwd!()]
 
 config :logger,
-  level: :debug
+  level: :warn
 
 config :logger, :console,
   format: "$time $metadata[$level] $message\n",
