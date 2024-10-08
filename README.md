@@ -113,10 +113,6 @@ MIX_ENV=prod mix release
 
 Throttle provides a solid foundation for building HubSpot workflow action backends. By leveraging Elixir and Phoenix, it ensures high performance and scalability. Use this repository as a template to quickly get started with your own custom HubSpot workflow actions, handling everything from OAuth to webhook processing with ease.
 
-## License
-
-[Specify your license here]
-
 ## Support
 
 For support, please open an issue in the GitHub repository or contact [your contact information].
