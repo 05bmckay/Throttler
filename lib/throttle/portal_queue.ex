@@ -1,6 +1,7 @@
 defmodule Throttle.PortalQueue do
   use GenServer
   require Logger
+  alias Throttle.OAuthManager
 
   @flush_interval 1_000   # Flush after 1 second
   @max_batch_size 100     # Flush if queue reaches 100 actions
