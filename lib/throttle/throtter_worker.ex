@@ -110,10 +110,18 @@ defmodule Throttle.ThrottleWorker do
 
   def process_with_token(executions, token) do
     Logger.info("Processing with token for portal: #{token.portal_id}")
-    case send_batch_complete_with_retry(executions, token.access_token) do
+
+    # Filter out duplicate callback IDs
+    unique_executions = Enum.uniq_by(executions, & &1.callback_id)
+
+    if length(unique_executions) < length(executions) do
+      Logger.warning("Filtered out #{length(executions) - length(unique_executions)} duplicate callback IDs")
+    end
+
+    case send_batch_complete_with_retry(unique_executions, token.access_token) do
       :ok ->
         Logger.info("Batch complete sent successfully")
-        mark_actions_processed(Enum.map(executions, & &1.id))
+        mark_actions_processed(Enum.map(unique_executions, & &1.id))
         :ok
       error ->
         Logger.error("Error sending batch complete: #{inspect(error)}")
@@ -147,41 +155,40 @@ defmodule Throttle.ThrottleWorker do
   end
 
   defp send_batch_complete(executions, access_token) do
-
     Logger.info(fn -> "Sending batch complete for #{length(executions)} executions" end)
     url = "https://api.hubapi.com/automation/v4/actions/callbacks/complete"
 
-     # Prepare the request as before
-     body = Jason.encode!(%{
-       inputs: Enum.map(executions, fn execution ->
-         %{
-           callbackId: execution.callback_id,
-           outputFields: %{hs_execution_state: "SUCCESS"}
-         }
-       end)
-     })
+    body = Jason.encode!(%{
+      inputs: Enum.map(executions, fn execution ->
+        %{
+          callbackId: execution.callback_id,
+          outputFields: %{hs_execution_state: "SUCCESS"}
+        }
+      end)
+    })
 
-     headers = [
-       {"Authorization", "Bearer #{access_token}"},
-       {"Content-Type", "application/json"}
-     ]
+    headers = [
+      {"Authorization", "Bearer #{access_token}"},
+      {"Content-Type", "application/json"}
+    ]
 
-     case HTTPoison.post(url, body, headers) do
-       {:ok, %{status_code: 204}} ->
-         Logger.debug("Batch complete request successful")
-         :ok
-       {:ok, %{status_code: 429, headers: response_headers}} ->
-         retry_after = extract_retry_after(response_headers) || 60
-         Logger.error("Rate limited by HubSpot API, retry after #{retry_after} seconds")
-         {:error, {:rate_limited, retry_after}}
-       {:ok, response} ->
-         Logger.error("API error: Status #{response.status_code}, Body: #{inspect(response.body)}")
-         {:error, {:api_error, response.status_code, response.body}}
-       {:error, error} ->
-         Logger.error("HTTP error: #{inspect(error.reason)}")
-         {:error, {:http_error, error.reason}}
-     end
-   end
+    case HTTPoison.post(url, body, headers) do
+      {:ok, %{status_code: 204}} ->
+        Logger.debug("Batch complete request successful")
+        :ok
+      {:ok, %{status_code: 429, headers: response_headers}} ->
+        retry_after = extract_retry_after(response_headers) || 60
+        Logger.error("Rate limited by HubSpot API, retry after #{retry_after} seconds")
+        {:error, {:rate_limited, retry_after}}
+      {:ok, response} ->
+        Logger.error("API error: Status #{response.status_code}, Body: #{inspect(response.body)}")
+        parsed_body = Jason.decode!(response.body)
+        {:error, {:api_error, response.status_code, parsed_body}}
+      {:error, error} ->
+        Logger.error("HTTP error: #{inspect(error.reason)}")
+        {:error, {:http_error, error.reason}}
+    end
+  end
 
   defp mark_actions_processed(action_ids) do
     {_count, _} = from(a in ActionExecution, where: a.id in ^action_ids)
