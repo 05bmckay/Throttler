@@ -3,7 +3,7 @@ defmodule Throttle.PortalQueue do
   require Logger
   alias Throttle.OAuthManager
 
-  @flush_interval 1_000   # Flush after 1 second
+  @flush_interval 900   # Flush after 900 milliseconds
   @max_batch_size 100     # Flush if queue reaches 100 actions
 
   ## Client API

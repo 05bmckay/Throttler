@@ -28,12 +28,12 @@ defmodule Throttle.ThrottleWorker do
                  Logger.error("Error fetching batch for queue #{queue_id}: #{inspect(reason)}")
                  {:error, reason}
              end
-           {:ok, false} ->
-             Logger.info("Queue #{queue_id} is inactive or empty, skipping processing")
-             {:error, :queue_inactive}
-           {:error, reason} ->
-             Logger.error("Error checking active status for queue #{queue_id}: #{inspect(reason)}")
-             {:error, reason}
+             {:ok, false} ->
+              Logger.info("Queue #{queue_id} is inactive or empty, stopping processing")
+              :discard
+            {:error, reason} ->
+              Logger.error("Error checking active status for queue #{queue_id}: #{inspect(reason)}")
+              {:error, reason}
          end
        rescue
          e ->

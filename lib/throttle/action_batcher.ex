@@ -126,7 +126,20 @@ defmodule Throttle.ActionBatcher do
       time: action.time,
       period: action.period
     }
-    case Oban.insert(Throttle.ThrottleWorker.new(job_params)) do
+
+    # Use Oban's unique job feature
+    uniqueness = [
+      keys: [:queue_id],
+      fields: [:args],
+      states: [:scheduled, :available, :executing],
+      period: :infinity
+    ]
+
+    changeset =
+    Throttle.ThrottleWorker.new(job_params)
+    |> Oban.Job.unique(uniqueness)
+
+    case Oban.insert(changeset) do
       {:ok, job} ->
         Logger.info("Job scheduled successfully: #{inspect(job)}")
         :ok

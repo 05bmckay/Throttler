@@ -23,11 +23,6 @@ config :throttle, ThrottleWeb.Endpoint,
   url: [host: System.get_env("BASE_URL"), port: 443, scheme: "https"],
   watchers: []
 
-config :sentry,
-  dsn: System.get_env("SENTRY_URL"),
-  environment_name: Mix.env(),
-  enable_source_code_context: true,
-  root_source_code_paths: [File.cwd!()]
 
 config :logger,
   level: :warn

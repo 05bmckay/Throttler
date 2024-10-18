@@ -2,7 +2,7 @@ import Config
 
 # Configure your database
 config :throttle, Throttle.Repo,
-  url: System.get_env("DATABASE_URL"),
+  url: System.get_env("DEV_DATABASE_URL"),
   show_sensitive_data_on_connection_error: true,
   pool_size: 5,
   ssl: true,
