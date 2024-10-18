@@ -127,17 +127,8 @@ defmodule Throttle.ActionBatcher do
       period: action.period
     }
 
-    # Use Oban's unique job feature
-    uniqueness = [
-      keys: [:queue_id],
-      fields: [:args],
-      states: [:scheduled, :available, :executing],
-      period: :infinity
-    ]
-
     changeset =
     Throttle.ThrottleWorker.new(job_params)
-    |> Oban.Job.unique(uniqueness)
 
     case Oban.insert(changeset) do
       {:ok, job} ->
