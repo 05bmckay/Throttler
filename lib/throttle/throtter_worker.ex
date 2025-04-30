@@ -70,6 +70,7 @@ defmodule Throttle.ThrottleWorker do
 
     query = from(a in ActionExecution,
                  where: a.queue_id == ^queue_id and not a.processed,
+                 order_by: [asc: a.inserted_at],
                  limit: ^throughput)
 
     case Repo.all(query) do
