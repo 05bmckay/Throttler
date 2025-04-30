@@ -8,7 +8,7 @@ defmodule Throttle.ConfigCache do
   use GenServer
   require Logger
 
-  alias Throttle.Configurations
+  alias Throttle.Repo
   alias Throttle.Schemas.ThrottleConfig
 
   # Client API
@@ -47,12 +47,15 @@ defmodule Throttle.ConfigCache do
         # Not in cache, fetch from DB
         Logger.debug("ConfigCache miss for key: #{inspect(key)}")
         {portal_id, action_id} = key
-        case Configurations.get_throttle_config(portal_id, action_id) do
+        # Fetch directly from DB using Repo
+        case Repo.get_by(ThrottleConfig, portal_id: portal_id, action_id: action_id) do
           nil ->
              # Not found in DB either
+            Logger.warn("No config found in DB for key: #{inspect(key)}")
             {:reply, {:error, :not_found}, cache}
           %ThrottleConfig{} = config ->
             # Found in DB, store in cache and reply
+            Logger.debug("Fetched config from DB for key: #{inspect(key)}")
             new_cache = Map.put(cache, key, config)
             {:reply, {:ok, config}, new_cache}
         end
