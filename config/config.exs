@@ -26,5 +26,5 @@ import_config "#{config_env()}.exs"
 
 config :throttle, Oban,
   repo: Throttle.Repo,
-  plugins: [Oban.Plugins.Pruner],
-  queues: [default: 10, rate_limited: 1]
+  plugins: [Oban.Plugins.Pruner, Oban.Plugins.Cron],
+  queues: [default: 10, rate_limited: 1, maintenance: 1]

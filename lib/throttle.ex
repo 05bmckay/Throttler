@@ -8,12 +8,16 @@ defmodule Throttle do
   """
 
   import Ecto.Query
-  alias Throttle.{Repo, OAuthManager, QueueManager, ActionBatcher}
+  alias Throttle.{Repo, OAuthManager, QueueManager, ActionBatcher, ConfigCache}
   alias Throttle.Schemas.{ActionExecution, ThrottleConfig}
   require Logger
 
+  @doc """
+  Retrieves a throttle configuration, using the cache first.
+  Returns `{:ok, config}` or `{:error, :not_found}`.
+  """
   def get_throttle_config(portal_id, action_id) do
-    Repo.get_by(ThrottleConfig, portal_id: portal_id, action_id: action_id)
+    ConfigCache.get_config(portal_id, action_id)
   end
 
   @doc """

@@ -18,13 +18,17 @@ defmodule ThrottleWeb.ThrottleConfigController do
   end
 
   def show(conn, %{"portal_id" => portal_id, "action_id" => action_id}) do
-    case Throttle.get_throttle_config(portal_id, action_id) do
-      nil ->
+    # Convert string IDs to integers if necessary, assuming portal_id is integer
+    # Add error handling if conversion fails
+    portal_id_int = String.to_integer(portal_id)
+
+    case Throttle.get_throttle_config(portal_id_int, action_id) do
+      {:error, :not_found} ->
         conn
         |> put_status(:not_found)
         |> json(%{error: "Configuration not found"})
 
-      config ->
+      {:ok, config} ->
         render(conn, "show.json", config: config)
     end
   end

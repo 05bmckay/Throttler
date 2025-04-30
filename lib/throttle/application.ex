@@ -17,6 +17,10 @@ defmodule Throttle.Application do
       ThrottleWeb.Endpoint,
       # Start the ActionBatcher
       Throttle.ActionBatcher,
+      # Start the ConfigCache
+      Throttle.ConfigCache,
+      # Start the JobBatcher
+      {Throttle.JobBatcher, []},
       # Start Oban
       {Oban, Application.get_env(:throttle, Oban)},
       # Start Registry for portal queues

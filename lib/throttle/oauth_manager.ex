@@ -138,26 +138,6 @@ defmodule Throttle.OAuthManager do
   end
   defp is_encrypted?(_), do: false
 
-  # defp encrypt_token(token) do
-  #   Logger.debug("Encrypting token for portal: #{token.portal_id}")
-  #   encrypted = %{token |
-  #     access_token: Encryption.encrypt(token.access_token),
-  #     refresh_token: Encryption.encrypt(token.refresh_token)
-  #   }
-  #   Logger.debug("Token encrypted")
-  #   encrypted
-  # end
-
-  # defp decrypt_token(token) do
-  #   Logger.debug("Decrypting token for portal: #{token.portal_id}")
-  #   decrypted = %{token |
-  #     access_token: Encryption.decrypt(token.access_token),
-  #     refresh_token: Encryption.decrypt(token.refresh_token)
-  #   }
-  #   Logger.debug("Token decrypted")
-  #   decrypted
-  # end
-
   def token_expired?(token) do
     is_expired = DateTime.compare(token.expires_at, DateTime.utc_now()) == :lt
     Logger.debug("Token will expire in: #{DateTime.diff(token.expires_at, DateTime.utc_now(), :second)} seconds")

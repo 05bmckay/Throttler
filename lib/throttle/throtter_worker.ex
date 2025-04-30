@@ -6,43 +6,46 @@ defmodule Throttle.ThrottleWorker do
   import Ecto.Query
 
   @impl Oban.Worker
-  def perform(%Oban.Job{args: %{"queue_id" => queue_id, "max_throughput" => max_throughput, "time" => time, "period" => period}} = _job) do
-     result =
-       try do
-         case queue_active?(queue_id) do
-           {:ok, true} ->
-             case get_next_action_batch(queue_id, max_throughput) do
-               {:ok, executions} ->
-                 case process_executions(executions) do
-                   :ok ->
-                     schedule_next_job(queue_id, max_throughput, time, period)
-                     :ok
-                   {:ok, :ok} ->
-                     schedule_next_job(queue_id, max_throughput, time, period)
-                     :ok
-                   {:error, reason} ->
-                     Logger.error("Error processing executions for queue #{queue_id}: #{inspect(reason)}")
-                     {:error, reason}
-                 end
-               {:error, reason} ->
-                 Logger.error("Error fetching batch for queue #{queue_id}: #{inspect(reason)}")
-                 {:error, reason}
-             end
-             {:ok, false} ->
+  def perform(%Oban.Job{args: args}) do
+    %{max_throughput: max_throughput, time: time, period: period} = Throttle.Config.parse_args(args)
+    queue_id = args["queue_id"]
+
+    result =
+      try do
+        case queue_active?(queue_id) do
+          {:ok, true} ->
+            case get_next_action_batch(queue_id, max_throughput) do
+              {:ok, executions} ->
+                case process_executions(executions) do
+                  :ok ->
+                    schedule_next_job(queue_id, max_throughput, time, period)
+                    :ok
+                  {:ok, :ok} ->
+                    schedule_next_job(queue_id, max_throughput, time, period)
+                    :ok
+                  {:error, reason} ->
+                    Logger.error("Error processing executions for queue #{queue_id}: #{inspect(reason)}")
+                    {:error, reason}
+                end
+              {:error, reason} ->
+                Logger.error("Error fetching batch for queue #{queue_id}: #{inspect(reason)}")
+                {:error, reason}
+            end
+            {:ok, false} ->
               Logger.info("Queue #{queue_id} is inactive or empty, stopping processing")
               :discard
             {:error, reason} ->
               Logger.error("Error checking active status for queue #{queue_id}: #{inspect(reason)}")
               {:error, reason}
-         end
-       rescue
-         e ->
-           Logger.error("Unexpected error processing queue #{queue_id}: #{inspect(e)}")
-           {:error, :unexpected_error}
-       end
-     Logger.info("Finished processing queue: #{queue_id}, result: #{inspect(result)}")
-     result
-   end
+        end
+      rescue
+        e ->
+          Logger.error("Unexpected error processing queue #{queue_id}: #{inspect(e)}")
+          {:error, :unexpected_error}
+      end
+    Logger.info("Finished processing queue: #{queue_id}, result: #{inspect(result)}")
+    result
+  end
 
   defp queue_active?(queue_id) do
     Logger.debug("Checking if queue #{queue_id} is active")
