@@ -46,7 +46,7 @@ defmodule Throttle.Workers.JobCleaner do
     active_states = ["available", "scheduled", "executing"]
 
     query = from(j in Job,
-      where: j.worker == ^Throttle.ThrottleWorker and j.state in ^active_states,
+      where: j.worker == ^to_string(Throttle.ThrottleWorker) and j.state in ^active_states,
       select: fragment("?->>'queue_id'", j.args),
       distinct: true
     )
