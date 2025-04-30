@@ -47,7 +47,7 @@ defmodule Throttle.ConfigCache do
         # Not in cache, fetch from DB
         Logger.debug("ConfigCache miss for key: #{inspect(key)}")
         {portal_id, action_id} = key
-        case Configurations.get_config(portal_id, action_id) do
+        case Configurations.get_throttle_config(portal_id, action_id) do
           nil ->
              # Not found in DB either
             {:reply, {:error, :not_found}, cache}

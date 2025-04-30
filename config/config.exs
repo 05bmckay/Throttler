@@ -26,5 +26,11 @@ import_config "#{config_env()}.exs"
 
 config :throttle, Oban,
   repo: Throttle.Repo,
-  plugins: [Oban.Plugins.Pruner, Oban.Plugins.Cron],
+  plugins: [
+    Oban.Plugins.Pruner,
+    {Oban.Plugins.Cron, crontab: [
+      # Run the JobCleaner every 5 minutes
+      {"*/5 * * * *", Throttle.Workers.JobCleaner}
+    ]}
+  ],
   queues: [default: 10, rate_limited: 1, maintenance: 1]

@@ -9,7 +9,6 @@ defmodule Throttle.Workers.JobCleaner do
 
   alias Throttle.Repo
   alias Throttle.Schemas.ActionExecution
-  alias Throttle.ThrottleWorker # Assumed worker for processing actions
   alias Oban.Job
 
   # Run every 5 minutes

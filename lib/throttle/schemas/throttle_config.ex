@@ -13,7 +13,6 @@ defmodule Throttle.Schemas.ThrottleConfig do
     field(:max_throughput, :integer)
     field(:time_period, :integer)
     field(:time_unit, :string)
-
     timestamps()
   end
 
