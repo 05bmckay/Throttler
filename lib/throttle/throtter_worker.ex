@@ -6,10 +6,7 @@ defmodule Throttle.ThrottleWorker do
   import Ecto.Query
 
   @impl Oban.Worker
-  def perform(%Oban.Job{args: args}) do
-    %{max_throughput: max_throughput, time: time, period: period} = Throttle.Config.parse_args(args)
-    queue_id = args["queue_id"]
-
+  def perform(%Oban.Job{args: %{"queue_id" => queue_id, "max_throughput" => max_throughput, "time" => time, "period" => period}} = _job) do
     result =
       try do
         case queue_active?(queue_id) do
