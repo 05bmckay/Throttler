@@ -177,19 +177,43 @@ defmodule Throttle.ThrottleWorker do
       {:ok, %{status_code: 204}} ->
         Logger.debug("Batch complete request successful")
         :ok
+
+      {:ok, %{status_code: 403, body: response_body}} ->
+        # Handle Cloudflare/other 403 block specifically
+        ray_id = extract_cloudflare_ray_id(response_body)
+        Logger.error("API request blocked (403 Forbidden). Ray ID: #{ray_id || "Not Found"}. Body: #{response_body}")
+        {:error, {:http_error, 403, response_body}} # Return error without crashing
+
       {:ok, %{status_code: 429, headers: response_headers}} ->
         retry_after = extract_retry_after(response_headers) || 60
-        Logger.error("Rate limited by HubSpot API, retry after #{retry_after} seconds")
+        Logger.warning("Rate limited by HubSpot API (429), retry after #{retry_after} seconds")
         {:error, {:rate_limited, retry_after}}
+
       {:ok, response} ->
-        Logger.error("API error: Status #{response.status_code}, Body: #{inspect(response.body)}")
-        parsed_body = Jason.decode!(response.body)
-        {:error, {:api_error, response.status_code, parsed_body}}
+        # Attempt to parse other errors as JSON, but handle potential decode errors
+        case Jason.decode(response.body) do
+          {:ok, parsed_body} ->
+            Logger.error("API error: Status #{response.status_code}, Body: #{inspect(parsed_body)}")
+            {:error, {:api_error, response.status_code, parsed_body}}
+          {:error, decode_error} ->
+             Logger.error("API error: Status #{response.status_code}, Failed to decode JSON body: #{inspect(decode_error)}, Body: #{inspect(response.body)}")
+             {:error, {:http_error, response.status_code, response.body}}
+        end
+
       {:error, error} ->
         Logger.error("HTTP error: #{inspect(error.reason)}")
-        {:error, {:http_error, error.reason}}
+        {:error, {:http_error, error.reason}} # Note: a bit inconsistent, maybe {:http_client_error, reason}?
     end
   end
+
+  # Add a helper function to extract Ray ID (simple regex approach)
+  defp extract_cloudflare_ray_id(body) when is_binary(body) do
+    case Regex.run(~r/Cloudflare Ray ID: <strong[^>]*>([a-f0-9]+)<\/strong>/i, body) do
+      [_, ray_id] -> ray_id
+      _ -> nil
+    end
+  end
+  defp extract_cloudflare_ray_id(_), do: nil
 
   defp mark_actions_processed(action_ids) do
     {_count, _} = from(a in ActionExecution, where: a.id in ^action_ids)
