@@ -295,7 +295,7 @@ Stacktrace: #{inspect(stacktrace)}")
       last_failure_reason: nil,
       consecutive_failures: 0,
       on_hold_until: nil
-    ], bypass_opts: [sandbox: false]) # Add bypass_opts if needed in test/dev
+    ])
   end
 
   # New function to handle batch failure updates
@@ -311,16 +311,14 @@ Stacktrace: #{inspect(stacktrace)}")
     Repo.update_all(
       from(a in ActionExecution, where: a.id in ^action_ids),
       inc: [consecutive_failures: 1],
-      set: [last_failure_reason: reason],
-      bypass_opts: [sandbox: false] # Add bypass_opts if needed in test/dev
+      set: [last_failure_reason: reason]
     )
 
     # Check which actions have exceeded the failure threshold and put them on hold
     hold_until = DateTime.add(now, @hold_duration_seconds, :second)
     Repo.update_all(
       from(a in ActionExecution, where: a.id in ^action_ids and a.consecutive_failures >= @max_consecutive_failures),
-      set: [on_hold_until: hold_until],
-      bypass_opts: [sandbox: false] # Add bypass_opts if needed in test/dev
+      set: [on_hold_until: hold_until]
     )
   end
 
