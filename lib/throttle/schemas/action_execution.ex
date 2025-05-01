@@ -10,6 +10,11 @@ defmodule Throttle.Schemas.ActionExecution do
     field :time, :string
     field :period, :string
 
+    # New fields for error handling and hold
+    field :last_failure_reason, :string
+    field :consecutive_failures, :integer, default: 0
+    field :on_hold_until, :utc_datetime
+
     timestamps()
   end
 

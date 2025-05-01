@@ -67,9 +67,11 @@ defmodule Throttle.ThrottleWorker do
 
   defp get_next_action_batch(queue_id, max_throughput) do
     throughput = String.to_integer(max_throughput)
+    now = DateTime.utc_now()
 
     query = from(a in ActionExecution,
                  where: a.queue_id == ^queue_id and not a.processed,
+                 where: is_nil(a.on_hold_until) or a.on_hold_until <= ^now,
                  order_by: [asc: a.inserted_at],
                  limit: ^throughput)
 
@@ -109,11 +111,14 @@ defmodule Throttle.ThrottleWorker do
     end
   end
 
+  @max_consecutive_failures 3 # Put actions on hold after this many consecutive failures
+  @hold_duration_seconds 1800 # Hold for 30 minutes (1800 seconds)
+
   def process_with_token(executions, token) do
     Logger.info("Processing with token for portal: #{token.portal_id}")
 
-    # Filter out duplicate callback IDs
     unique_executions = Enum.uniq_by(executions, & &1.callback_id)
+    action_ids = Enum.map(unique_executions, & &1.id)
 
     if length(unique_executions) < length(executions) do
       Logger.warning("Filtered out #{length(executions) - length(unique_executions)} duplicate callback IDs")
@@ -121,12 +126,27 @@ defmodule Throttle.ThrottleWorker do
 
     case send_batch_complete_with_retry(unique_executions, token.access_token) do
       :ok ->
-        Logger.info("Batch complete sent successfully")
-        mark_actions_processed(Enum.map(unique_executions, & &1.id))
+        # Success: Mark processed and clear error fields
+        Logger.info("Batch complete sent successfully for actions: #{inspect(action_ids)}")
+        mark_actions_processed_and_clear_errors(action_ids)
         :ok
+
+      {:error, {:http_error, 403, _body}} ->
+        # Handle 403 specifically: Increment failure count, potentially put on hold
+        Logger.error("Batch failed with 403 Forbidden for actions: #{inspect(action_ids)}. Incrementing failure count.")
+        handle_batch_failure(action_ids, "forbidden")
+        {:error, :forbidden} # Return specific error
+
+      {:error, {:rate_limited, retry_after}} ->
+        # Rate limited: Don't change error state, will be retried by Oban or next run
+        Logger.warning("Batch rate limited (429) for actions: #{inspect(action_ids)}. Will retry later.")
+        {:error, {:rate_limited, retry_after}}
+
       error ->
-        Logger.error("Error sending batch complete: #{inspect(error)}")
-        error
+        # Other errors: Increment failure count, potentially put on hold
+        Logger.error("Error sending batch complete for actions: #{inspect(action_ids)}. Error: #{inspect(error)}. Incrementing failure count.")
+        handle_batch_failure(action_ids, "other_error")
+        error # Return original error
     end
   end
 
@@ -218,6 +238,41 @@ defmodule Throttle.ThrottleWorker do
   defp mark_actions_processed(action_ids) do
     {_count, _} = from(a in ActionExecution, where: a.id in ^action_ids)
     |> Repo.update_all(set: [processed: true])
+  end
+
+  # New function to mark processed AND clear error state
+  defp mark_actions_processed_and_clear_errors(action_ids) do
+    {_count, _} = from(a in ActionExecution, where: a.id in ^action_ids)
+    |> Repo.update_all(set: [
+      processed: true,
+      last_failure_reason: nil,
+      consecutive_failures: 0,
+      on_hold_until: nil
+    ])
+  end
+
+  # New function to handle batch failure updates
+  defp handle_batch_failure(action_ids, reason) do
+    now = DateTime.utc_now()
+    # We need to update based on the current state in the DB, which requires a more complex update.
+    # Easiest way is often to fetch, update, and save, but that's inefficient for batches.
+    # Using update_all with a CASE statement or fragment is possible but complex.
+    # Let's do a simpler update_all for now, acknowledging it might reset the hold period
+    # if an action fails again while already on hold.
+
+    # Increment consecutive_failures and set reason
+    Repo.update_all(
+      from(a in ActionExecution, where: a.id in ^action_ids),
+      inc: [consecutive_failures: 1],
+      set: [last_failure_reason: reason]
+    )
+
+    # Check which actions have exceeded the failure threshold and put them on hold
+    hold_until = DateTime.add(now, @hold_duration_seconds, :second)
+    Repo.update_all(
+      from(a in ActionExecution, where: a.id in ^action_ids and a.consecutive_failures >= @max_consecutive_failures),
+      set: [on_hold_until: hold_until]
+    )
   end
 
 
