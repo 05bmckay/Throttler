@@ -5,43 +5,90 @@ defmodule Throttle.ThrottleWorker do
   alias Throttle.Schemas.ActionExecution
   import Ecto.Query
 
+  # Store the initial configured max_attempts for the custom backoff calculation
+  @initial_max_attempts 3
+
   @impl Oban.Worker
-  def perform(%Oban.Job{args: %{"queue_id" => queue_id, "max_throughput" => max_throughput, "time" => time, "period" => period}} = _job) do
+  def backoff(%Oban.Job{} = job) do
+    # Calculate the number of "true" failures, ignoring snoozes
+    corrected_attempt = job.attempt - (job.max_attempts - @initial_max_attempts)
+
+    # Use the default backoff calculation with the corrected attempt count
+    # and ensure we use the original max_attempts for the backoff ceiling.
+    Oban.Worker.backoff(%{job | attempt: corrected_attempt, max_attempts: @initial_max_attempts})
+  end
+
+  @impl Oban.Worker
+  def perform(%Oban.Job{args: %{"queue_id" => queue_id, "max_throughput" => max_throughput, "time" => time_str, "period" => period}} = _job) do
     result =
       try do
-        case queue_active?(queue_id) do
-          {:ok, true} ->
-            case get_next_action_batch(queue_id, max_throughput) do
-              {:ok, executions} ->
-                case process_executions(executions) do
-                  :ok ->
-                    schedule_next_job(queue_id, max_throughput, time, period)
-                    :ok
-                  {:ok, :ok} ->
-                    schedule_next_job(queue_id, max_throughput, time, period)
-                    :ok
-                  {:error, reason} ->
-                    Logger.error("Error processing executions for queue #{queue_id}: #{inspect(reason)}")
-                    {:error, reason}
-                end
+        # No need to check if active here, get_next_action_batch handles empty queues.
+        case get_next_action_batch(queue_id, max_throughput) do
+          {:ok, []} ->
+            # Queue is empty, no work done. Let the job complete normally.
+            # It will be restarted later by JobCleaner or ActionBatcher if new items arrive.
+            Logger.info("Queue #{queue_id} is empty, completing job.")
+            :ok
+
+          {:ok, executions} ->
+            case process_executions(executions) do
+              :ok ->
+                # Successfully processed a batch. Decide how to proceed.
+                handle_successful_batch(queue_id, max_throughput, time_str, period)
+              # TODO: Revisit if {:ok, :ok} is a possible return value here and handle appropriately
+              {:ok, :ok} ->
+                handle_successful_batch(queue_id, max_throughput, time_str, period)
               {:error, reason} ->
-                Logger.error("Error fetching batch for queue #{queue_id}: #{inspect(reason)}")
+                Logger.error("Error processing executions for queue #{queue_id}: #{inspect(reason)}")
+                # Let Oban handle retry based on standard :error tuple
                 {:error, reason}
             end
-            {:ok, false} ->
-              Logger.info("Queue #{queue_id} is inactive or empty, stopping processing")
-              :discard
-            {:error, reason} ->
-              Logger.error("Error checking active status for queue #{queue_id}: #{inspect(reason)}")
-              {:error, reason}
+
+          {:error, reason} ->
+            Logger.error("Error fetching batch for queue #{queue_id}: #{inspect(reason)}")
+            {:error, reason} # Let Oban handle retry
         end
       rescue
         e ->
-          Logger.error("Unexpected error processing queue #{queue_id}: #{inspect(e)}")
-          {:error, :unexpected_error}
+          stacktrace = System.stacktrace()
+          Logger.error("Unexpected error processing queue #{queue_id}: #{inspect(e)}
+Stacktrace: #{inspect(stacktrace)}")
+          {:error, :unexpected_error} # Let Oban handle retry
       end
-    Logger.info("Finished processing queue: #{queue_id}, result: #{inspect(result)}")
-    result
+
+    Logger.info("Job for queue #{queue_id} finishing with result: #{inspect(result)}")
+    result # Return :ok, {:error, ...}, or {:snooze, ...}
+  end
+
+  defp handle_successful_batch(queue_id, max_throughput, time_str, period) do
+    delay = calculate_delay(time_str, period)
+
+    if delay <= 10 do
+      # For short intervals, check if still active and snooze if necessary
+      check_active_and_snooze_or_complete(queue_id, delay)
+    else
+      # For longer intervals, schedule a new job like before
+      schedule_next_job(queue_id, max_throughput, time_str, period)
+      :ok # Return :ok because scheduling the next job was successful for this one.
+    end
+  end
+
+  defp check_active_and_snooze_or_complete(queue_id, delay) do
+    case queue_active?(queue_id) do
+      {:ok, true} ->
+        # Queue still has items, snooze to run again
+        Logger.debug("Queue #{queue_id} still active, snoozing for #{delay} seconds.")
+        {:snooze, delay}
+      {:ok, false} ->
+        # Queue appears empty *now*. Let the job finish.
+        # JobCleaner or ActionBatcher will restart it if needed later.
+        Logger.debug("Queue #{queue_id} now inactive/empty, completing job after snooze-eligible interval.")
+        :ok
+      {:error, reason} ->
+         # Error checking status, better to let Oban retry the whole job.
+         Logger.error("Error checking queue status after processing for #{queue_id}: #{inspect(reason)}")
+         {:error, {:queue_check_failed, reason}}
+    end
   end
 
   defp queue_active?(queue_id) do
@@ -248,7 +295,7 @@ defmodule Throttle.ThrottleWorker do
       last_failure_reason: nil,
       consecutive_failures: 0,
       on_hold_until: nil
-    ])
+    ], bypass_opts: [sandbox: false]) # Add bypass_opts if needed in test/dev
   end
 
   # New function to handle batch failure updates
@@ -264,14 +311,16 @@ defmodule Throttle.ThrottleWorker do
     Repo.update_all(
       from(a in ActionExecution, where: a.id in ^action_ids),
       inc: [consecutive_failures: 1],
-      set: [last_failure_reason: reason]
+      set: [last_failure_reason: reason],
+      bypass_opts: [sandbox: false] # Add bypass_opts if needed in test/dev
     )
 
     # Check which actions have exceeded the failure threshold and put them on hold
     hold_until = DateTime.add(now, @hold_duration_seconds, :second)
     Repo.update_all(
       from(a in ActionExecution, where: a.id in ^action_ids and a.consecutive_failures >= @max_consecutive_failures),
-      set: [on_hold_until: hold_until]
+      set: [on_hold_until: hold_until],
+      bypass_opts: [sandbox: false] # Add bypass_opts if needed in test/dev
     )
   end
 
