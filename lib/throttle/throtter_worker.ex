@@ -201,7 +201,7 @@ defmodule Throttle.ThrottleWorker do
       {:ok, %{status_code: 403, body: response_body}} ->
         # Handle Cloudflare/other 403 block specifically
         ray_id = extract_cloudflare_ray_id(response_body)
-        Logger.error("API request blocked (403 Forbidden). Ray ID: #{ray_id || "Not Found"}. Body: #{response_body}")
+        Logger.error("API request blocked (403 Forbidden). Ray ID: #{ray_id || "Not Found"}.")
         {:error, {:http_error, 403, response_body}} # Return error without crashing
 
       {:ok, %{status_code: 429, headers: response_headers}} ->
