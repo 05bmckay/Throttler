@@ -19,7 +19,7 @@ defmodule Throttle.ThrottleWorker do
   end
 
   @impl Oban.Worker
-  def perform(%Oban.Job{args: %{"queue_id" => queue_id, "max_throughput" => max_throughput, "time" => time_str, "period" => period}} = _job) do
+  def perform(%Oban.Job{args: %{"queue_id" => queue_id, "max_throughput" => max_throughput, "time" => time_str, "period" => period}} = job) do
     result =
       try do
         # No need to check if active here, get_next_action_batch handles empty queues.
@@ -34,10 +34,10 @@ defmodule Throttle.ThrottleWorker do
             case process_executions(executions) do
               :ok ->
                 # Successfully processed a batch. Decide how to proceed.
-                handle_successful_batch(queue_id, max_throughput, time_str, period)
+                handle_successful_batch(job, queue_id, max_throughput, time_str, period)
               # TODO: Revisit if {:ok, :ok} is a possible return value here and handle appropriately
               {:ok, :ok} ->
-                handle_successful_batch(queue_id, max_throughput, time_str, period)
+                handle_successful_batch(job, queue_id, max_throughput, time_str, period)
               {:error, reason} ->
                 Logger.error("Error processing executions for queue #{queue_id}: #{inspect(reason)}")
                 # Let Oban handle retry based on standard :error tuple
@@ -60,12 +60,12 @@ Stacktrace: #{inspect(stacktrace)}")
     result # Return :ok, {:error, ...}, or {:snooze, ...}
   end
 
-  defp handle_successful_batch(queue_id, max_throughput, time_str, period) do
+  defp handle_successful_batch(job, queue_id, max_throughput, time_str, period) do
     delay = calculate_delay(time_str, period)
 
     if delay <= 10 do
-      # For short intervals, check if still active and snooze if necessary
-      check_active_and_snooze_or_complete(queue_id, delay)
+      # For short intervals, check if still active and snooze if necessary, respecting attempt limit
+      check_active_and_snooze_or_complete(job, queue_id, max_throughput, time_str, period, delay)
     else
       # For longer intervals, schedule a new job like before
       schedule_next_job(queue_id, max_throughput, time_str, period)
@@ -73,21 +73,28 @@ Stacktrace: #{inspect(stacktrace)}")
     end
   end
 
-  defp check_active_and_snooze_or_complete(queue_id, delay) do
-    case queue_active?(queue_id) do
-      {:ok, true} ->
-        # Queue still has items, snooze to run again
-        Logger.debug("Queue #{queue_id} still active, snoozing for #{delay} seconds.")
-        {:snooze, delay}
-      {:ok, false} ->
-        # Queue appears empty *now*. Let the job finish.
-        # JobCleaner or ActionBatcher will restart it if needed later.
-        Logger.debug("Queue #{queue_id} now inactive/empty, completing job after snooze-eligible interval.")
-        :ok
-      {:error, reason} ->
-         # Error checking status, better to let Oban retry the whole job.
-         Logger.error("Error checking queue status after processing for #{queue_id}: #{inspect(reason)}")
-         {:error, {:queue_check_failed, reason}}
+  defp check_active_and_snooze_or_complete(job, queue_id, max_throughput, time_str, period, delay) do
+    if job.attempt >= 100 do
+      Logger.warn("Job for queue #{queue_id} reached attempt limit (#{job.attempt}). Scheduling new job instead of snoozing.")
+      schedule_next_job(queue_id, max_throughput, time_str, period)
+      :ok
+    else
+      # Attempt limit not reached, proceed with snooze check
+      case queue_active?(queue_id) do
+        {:ok, true} ->
+          # Queue still has items, snooze to run again
+          Logger.debug("Queue #{queue_id} still active (attempt #{job.attempt + 1}), snoozing for #{delay} seconds.")
+          {:snooze, delay}
+        {:ok, false} ->
+          # Queue appears empty *now*. Let the job finish.
+          # JobCleaner or ActionBatcher will restart it if needed later.
+          Logger.debug("Queue #{queue_id} now inactive/empty (attempt #{job.attempt}), completing job after snooze-eligible interval.")
+          :ok
+        {:error, reason} ->
+           # Error checking status, better to let Oban retry the whole job.
+           Logger.error("Error checking queue status after processing for #{queue_id} (attempt #{job.attempt}): #{inspect(reason)}")
+           {:error, {:queue_check_failed, reason}}
+      end
     end
   end
 
