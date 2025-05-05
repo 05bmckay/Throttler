@@ -1,5 +1,8 @@
 defmodule Throttle.ThrottleWorker do
-  use Oban.Worker, queue: :default, max_attempts: 3, unique: [keys: [:queue_id], fields: [:args], states: [:scheduled, :available], period: :infinity]
+  use Oban.Worker,
+    queue: :default,
+    max_attempts: 3,
+    unique: [keys: [[:args, "queue_id"]], states: [:scheduled, :available], period: :infinity]
   require Logger
   alias Throttle.Repo
   alias Throttle.Schemas.ActionExecution
