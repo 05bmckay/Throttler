@@ -2,7 +2,8 @@ defmodule Throttle.ThrottleWorker do
   use Oban.Worker,
     queue: :default,
     max_attempts: 3,
-    unique: [keys: [[:args, "queue_id"]], states: [:scheduled, :available], period: :infinity]
+    # Unique per worker, based only on the :queue_id key within args, for scheduled/available jobs.
+    unique: [fields: [:worker, :args], keys: [:queue_id], states: [:scheduled, :available], period: :infinity]
   require Logger
   alias Throttle.Repo
   alias Throttle.Schemas.ActionExecution
@@ -22,7 +23,7 @@ defmodule Throttle.ThrottleWorker do
   end
 
   @impl Oban.Worker
-  def perform(%Oban.Job{args: %{"queue_id" => queue_id, "max_throughput" => max_throughput, "time" => time_str, "period" => period}} = job) do
+  def perform(%Oban.Job{args: %{queue_id: queue_id, max_throughput: max_throughput, time: time_str, period: period}} = job) do
     result =
       try do
         # No need to check if active here, get_next_action_batch handles empty queues.
@@ -78,7 +79,10 @@ Stacktrace: #{inspect(stacktrace)}")
 
   defp check_active_and_snooze_or_complete(job, queue_id, max_throughput, time_str, period, delay) do
     if job.attempt >= 100 do
-      Logger.warn("Job for queue #{queue_id} reached attempt limit (#{job.attempt}). Scheduling new job instead of snoozing.")
+      # Use Logger.warning instead of deprecated Logger.warn
+      Logger.warning(
+        "Job for queue #{queue_id} reached attempt limit (#{job.attempt}). Scheduling new job instead of snoozing."
+      )
       schedule_next_job(queue_id, max_throughput, time_str, period)
       :ok
     else
@@ -292,11 +296,6 @@ Stacktrace: #{inspect(stacktrace)}")
   end
   defp extract_cloudflare_ray_id(_), do: nil
 
-  defp mark_actions_processed(action_ids) do
-    {_count, _} = from(a in ActionExecution, where: a.id in ^action_ids)
-    |> Repo.update_all(set: [processed: true])
-  end
-
   # New function to mark processed AND clear error state
   defp mark_actions_processed_and_clear_errors(action_ids) do
     {_count, _} = from(a in ActionExecution, where: a.id in ^action_ids)
@@ -335,14 +334,18 @@ Stacktrace: #{inspect(stacktrace)}")
 
   defp schedule_next_job(queue_id, max_throughput, time, period) do
       delay = calculate_delay(time, period)
-      Logger.debug("ThrottleWorker: Scheduling next job for queue #{queue_id} with delay: #{delay} seconds")
+      Logger.debug(
+        "ThrottleWorker: Scheduling next job for queue #{queue_id} with delay: #{delay} seconds"
+      )
 
+      # Use atom keys for args to match unique keys config
       job_params = %{
         queue_id: queue_id,
-        max_throughput: to_string(max_throughput),
+        max_throughput: to_string(max_throughput), # Ensure these are strings if perform expects strings
         time: to_string(time),
         period: period
       }
+
       Oban.insert(new(job_params, schedule_in: delay))
     end
 
