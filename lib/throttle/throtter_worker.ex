@@ -23,7 +23,15 @@ defmodule Throttle.ThrottleWorker do
   end
 
   @impl Oban.Worker
-  def perform(%Oban.Job{args: %{queue_id: queue_id, max_throughput: max_throughput, time: time_str, period: period}} = job) do
+  def perform(%Oban.Job{args: args_map} = job) do
+    # Normalize args map to use atom keys internally
+    %{
+      queue_id: queue_id,
+      max_throughput: max_throughput,
+      time: time_str,
+      period: period
+    } = normalize_args(args_map)
+
     result =
       try do
         # No need to check if active here, get_next_action_batch handles empty queues.
@@ -39,7 +47,6 @@ defmodule Throttle.ThrottleWorker do
               :ok ->
                 # Successfully processed a batch. Decide how to proceed.
                 handle_successful_batch(job, queue_id, max_throughput, time_str, period)
-              # TODO: Revisit if {:ok, :ok} is a possible return value here and handle appropriately
               {:ok, :ok} ->
                 handle_successful_batch(job, queue_id, max_throughput, time_str, period)
               {:error, reason} ->
@@ -54,14 +61,24 @@ defmodule Throttle.ThrottleWorker do
         end
       rescue
         e ->
-          stacktrace = System.stacktrace()
-          Logger.error("Unexpected error processing queue #{queue_id}: #{inspect(e)}
-Stacktrace: #{inspect(stacktrace)}")
+          stacktrace = __STACKTRACE__
+          Logger.error("Unexpected error processing queue #{queue_id}: #{inspect(e)}\nStacktrace: #{inspect(stacktrace)}")
           {:error, :unexpected_error} # Let Oban handle retry
       end
 
     Logger.info("Job for queue #{queue_id} finishing with result: #{inspect(result)}")
     result # Return :ok, {:error, ...}, or {:snooze, ...}
+  end
+
+  # Helper to normalize args map keys to atoms
+  defp normalize_args(%{queue_id: _} = args), do: args
+  defp normalize_args(%{"queue_id" => queue_id, "max_throughput" => max_throughput, "time" => time, "period" => period}) do
+    %{
+      queue_id: queue_id,
+      max_throughput: max_throughput,
+      time: time,
+      period: period
+    }
   end
 
   defp handle_successful_batch(job, queue_id, max_throughput, time_str, period) do
