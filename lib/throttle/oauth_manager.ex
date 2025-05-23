@@ -15,12 +15,18 @@ defmodule Throttle.OAuthManager do
     case fetch_token_details(token_data["access_token"]) do
       {:ok, token_details} ->
         Logger.info("Successfully fetched token details: #{inspect(token_details)}")
+        
+        # Merge token details with original token data for complete response
+        full_token_response = Map.merge(token_data, token_details)
+        
         %SecureOAuthToken{}
         |> SecureOAuthToken.changeset(%{
           portal_id: token_details["hub_id"],
           access_token: token_data["access_token"],
           refresh_token: token_data["refresh_token"],
-          expires_at: calculate_expiration(token_data["expires_in"])
+          expires_at: calculate_expiration(token_data["expires_in"]),
+          token_response: full_token_response,
+          email: token_details["user"]
         })
         |> Repo.insert(on_conflict: :replace_all, conflict_target: :portal_id)
         |> case do
@@ -91,11 +97,37 @@ defmodule Throttle.OAuthManager do
     case do_refresh_token(token) do
       {:ok, new_token_data} ->
         Logger.info("Token refreshed successfully for portal: #{token.portal_id}")
-        new_attrs = %{
-          access_token: new_token_data["access_token"],
-          refresh_token: new_token_data["refresh_token"],
-          expires_at: calculate_expiration(new_token_data["expires_in"])
-        }
+        
+        # Only fetch token details if token_response is nil/empty
+        new_attrs = if is_nil(token.token_response) or token.token_response == %{} do
+          Logger.info("Token response is empty, fetching full token details")
+          case fetch_token_details(new_token_data["access_token"]) do
+            {:ok, token_details} ->
+              full_token_response = Map.merge(new_token_data, token_details)
+              %{
+                access_token: new_token_data["access_token"],
+                refresh_token: new_token_data["refresh_token"],
+                expires_at: calculate_expiration(new_token_data["expires_in"]),
+                token_response: full_token_response,
+                email: token_details["user"]
+              }
+            {:error, _} ->
+              # If we can't fetch details, just update tokens without token_response
+              %{
+                access_token: new_token_data["access_token"],
+                refresh_token: new_token_data["refresh_token"],
+                expires_at: calculate_expiration(new_token_data["expires_in"])
+              }
+          end
+        else
+          # Token response already exists, don't update it
+          %{
+            access_token: new_token_data["access_token"],
+            refresh_token: new_token_data["refresh_token"],
+            expires_at: calculate_expiration(new_token_data["expires_in"])
+          }
+        end
+        
         case update_token(token, new_attrs) do
           {:ok, updated_token} ->
             Logger.info("Token updated in database for portal: #{token.portal_id}")
@@ -113,7 +145,7 @@ defmodule Throttle.OAuthManager do
 
   def update_token(existing_token, attrs) do
     # Ensure we're only updating the fields that exist in the SecureOAuthToken schema
-    update_attrs = Map.take(attrs, [:access_token, :refresh_token, :expires_at])
+    update_attrs = Map.take(attrs, [:access_token, :refresh_token, :expires_at, :token_response, :email])
 
     # Check if the new tokens are already encrypted
     new_attrs = if is_encrypted?(update_attrs[:access_token]) do

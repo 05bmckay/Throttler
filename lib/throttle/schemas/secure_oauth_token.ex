@@ -8,20 +8,22 @@ defmodule Throttle.Schemas.SecureOAuthToken do
     field :access_token, :string
     field :refresh_token, :string
     field :expires_at, :utc_datetime
+    field :token_response, :map
+    field :email, :string
 
     timestamps()
   end
 
   def changeset(token, attrs) do
     token
-    |> cast(attrs, [:portal_id, :access_token, :refresh_token, :expires_at])
+    |> cast(attrs, [:portal_id, :access_token, :refresh_token, :expires_at, :token_response, :email])
     |> validate_required([:portal_id, :access_token, :refresh_token, :expires_at])
     |> unique_constraint(:portal_id)
   end
 
   def update_changeset(token, attrs) do
     token
-    |> cast(attrs, [:access_token, :refresh_token, :expires_at])
+    |> cast(attrs, [:access_token, :refresh_token, :expires_at, :token_response, :email])
     |> validate_required([:access_token, :refresh_token, :expires_at])
   end
 
