@@ -161,34 +161,19 @@ defmodule Throttle.OAuthManager do
   end
 
   def update_token(existing_token, attrs) do
-    # Ensure we're only updating the fields that exist in the SecureOAuthToken schema
     update_attrs =
       Map.take(attrs, [:access_token, :refresh_token, :expires_at, :token_response, :email])
 
-    # Check if the new tokens are already encrypted
-    new_attrs =
-      if is_encrypted?(update_attrs[:access_token]) do
-        update_attrs
-      else
-        Map.merge(update_attrs, %{
-          access_token: Throttle.Encryption.encrypt(update_attrs[:access_token]),
-          refresh_token: Throttle.Encryption.encrypt(update_attrs[:refresh_token])
-        })
-      end
+    encrypted_attrs =
+      Map.merge(update_attrs, %{
+        access_token: Throttle.Encryption.encrypt(update_attrs[:access_token]),
+        refresh_token: Throttle.Encryption.encrypt(update_attrs[:refresh_token])
+      })
 
     existing_token
-    |> SecureOAuthToken.update_changeset(new_attrs)
+    |> SecureOAuthToken.update_changeset(encrypted_attrs)
     |> Repo.update()
   end
-
-  defp is_encrypted?(token) when is_binary(token) do
-    case Base.decode64(token) do
-      {:ok, _} -> true
-      :error -> false
-    end
-  end
-
-  defp is_encrypted?(_), do: false
 
   def token_expired?(token) do
     is_expired = DateTime.compare(token.expires_at, DateTime.utc_now()) == :lt
