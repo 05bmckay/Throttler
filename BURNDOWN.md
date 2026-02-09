@@ -36,15 +36,18 @@
 - [x] **P3-1** Dead JobBatcher in supervision tree → Removed (`035f9d7`)
 - [x] **P3-3** Filename typo throtter_worker → throttle_worker (`33da16d`)
 - [x] **P3-4** Logger.warn deprecated → Logger.warning (`832a6ad`)
-- [ ] **P3-7** Hardcoded secrets in dev/prod config — Move to env vars
+
+## Sprint 2 — Scale Under Load (Complete)
+
+- [x] **P2-6** Fix batch failure double-UPDATE → Single atomic UPDATE with CASE (`3039c7b`)
+- [x] **P0-2** Webhook signature verification → v2 HMAC-SHA256 plug + body caching (`a70bf8f`)
+- [x] **P1-5** HTTP connection pooling → Finch migration, 25-conn pool × 2 (`8fd4b92`)
+- [x] **P2-5** Data retention worker → Oban cron, 30-day retention, batch delete (`a11c136`)
+- [x] **P0-3** OAuth token refresh mutex → Per-portal GenServer lock (`320c737`)
+- [x] **P1-2** Async flush in ActionBatcher → Task.Supervisor.async_nolink (`903eace`)
+- [x] **P3-6** Custom telemetry events + Oban default logger (`257666d`)
 
 ## Remaining (Future Sprints)
 
-- [ ] **P0-2** Webhook signature verification (security)
-- [ ] **P1-2** Async flush in ActionBatcher (Task.Supervisor)
-- [ ] **P1-5** HTTP connection pooling (Finch migration)
-- [ ] **P0-3** OAuth token refresh mutex (race condition)
-- [ ] **P2-5** Data retention worker for action_executions
-- [ ] **P2-6** Fix batch failure double-UPDATE logic
 - [ ] **P3-2** ThrottleWorker decomposition (390 lines → modules)
-- [ ] **P3-6** Custom telemetry events + Oban logger
+- [ ] **P3-7** Hardcoded secrets in dev/prod config — Move to env vars
