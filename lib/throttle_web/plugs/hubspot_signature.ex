@@ -35,13 +35,18 @@ defmodule ThrottleWeb.Plugs.HubSpotSignature do
 
   @impl true
   def call(conn, _opts) do
-    case get_client_secret() do
-      nil ->
-        Logger.warning("HubSpot client secret not configured — skipping signature verification")
-        conn
+    if signature_verification_disabled?() do
+      Logger.warning("HubSpot signature verification disabled via HUBSPOT_SKIP_SIGNATURE=true")
+      conn
+    else
+      case get_client_secret() do
+        nil ->
+          Logger.warning("HubSpot client secret not configured — skipping signature verification")
+          conn
 
-      secret ->
-        verify_signature(conn, secret)
+        secret ->
+          verify_signature(conn, secret)
+      end
     end
   end
 
@@ -135,5 +140,9 @@ defmodule ThrottleWeb.Plugs.HubSpotSignature do
 
   defp get_client_secret do
     Application.get_env(:throttle, :hubspot_client_secret)
+  end
+
+  defp signature_verification_disabled? do
+    System.get_env("HUBSPOT_SKIP_SIGNATURE") == "true"
   end
 end
