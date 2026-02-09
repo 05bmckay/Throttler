@@ -1,70 +1,53 @@
 defmodule Throttle.ConfigCache do
-  @moduledoc """
-  A simple GenServer-based cache for ThrottleConfig records.
-
-  It stores configurations keyed by `{portal_id, action_id}`.
-  Currently, it caches indefinitely without TTL or invalidation.
-  """
   use GenServer
   require Logger
 
   alias Throttle.Repo
   alias Throttle.Schemas.ThrottleConfig
 
-  # Client API
+  @ttl_ms :timer.minutes(5)
 
-  @doc """
-  Starts the ConfigCache GenServer.
-  """
   def start_link(_opts) do
     GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
   end
 
-  @doc """
-  Fetches a ThrottleConfig from the cache or the database.
-
-  Returns `{:ok, config}` or `{:error, :not_found}`.
-  """
   def get_config(portal_id, action_id) do
-    key = {portal_id, action_id}
-    # Use call for synchronous fetch & update
-    GenServer.call(__MODULE__, {:get, key})
+    GenServer.call(__MODULE__, {:get, {portal_id, action_id}}, 5_000)
   end
 
-  # Server Callbacks
+  def bust_cache(portal_id, action_id) do
+    GenServer.cast(__MODULE__, {:invalidate, {portal_id, action_id}})
+  end
 
   @impl true
   def init(_opts) do
-    Logger.info("Starting ConfigCache")
-    # State is a map: {portal_id, action_id} -> config
     {:ok, %{}}
   end
 
   @impl true
   def handle_call({:get, key}, _from, cache) do
+    now = System.monotonic_time(:millisecond)
+
     case Map.get(cache, key) do
-      nil ->
-        # Not in cache, fetch from DB
-        Logger.debug("ConfigCache miss for key: #{inspect(key)}")
+      {%ThrottleConfig{} = config, cached_at} when now - cached_at < @ttl_ms ->
+        {:reply, {:ok, config}, cache}
+
+      _miss_or_expired ->
         {portal_id, action_id} = key
-        # Fetch directly from DB using Repo
+
         case Repo.get_by(ThrottleConfig, portal_id: portal_id, action_id: action_id) do
           nil ->
-             # Not found in DB either
-            Logger.warn("No config found in DB for key: #{inspect(key)}")
-            {:reply, {:error, :not_found}, cache}
+            Logger.warning("No config found in DB for key: #{inspect(key)}")
+            {:reply, {:error, :not_found}, Map.delete(cache, key)}
+
           %ThrottleConfig{} = config ->
-            # Found in DB, store in cache and reply
-            Logger.debug("Fetched config from DB for key: #{inspect(key)}")
-            new_cache = Map.put(cache, key, config)
-            {:reply, {:ok, config}, new_cache}
+            {:reply, {:ok, config}, Map.put(cache, key, {config, now})}
         end
-      %ThrottleConfig{} = config ->
-        # Found in cache
-        Logger.debug("ConfigCache hit for key: #{inspect(key)}")
-        {:reply, {:ok, config}, cache}
     end
   end
 
-  # Optional: Add handle_cast/handle_info for cache invalidation later if needed
+  @impl true
+  def handle_cast({:invalidate, key}, cache) do
+    {:noreply, Map.delete(cache, key)}
+  end
 end
