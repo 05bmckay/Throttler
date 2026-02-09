@@ -17,8 +17,8 @@ defmodule ThrottleWeb.Plugs.HubSpotSignature do
     else
       case get_client_secret() do
         nil ->
-          Logger.warning("HubSpot client secret not configured — skipping signature verification")
-          conn
+          Logger.error("HubSpot client secret not configured — rejecting request")
+          reject(conn, "server misconfiguration: client secret not set")
 
         secret ->
           verify_signature(conn, secret)
@@ -144,6 +144,7 @@ defmodule ThrottleWeb.Plugs.HubSpotSignature do
   end
 
   defp signature_verification_disabled? do
-    System.get_env("HUBSPOT_SKIP_SIGNATURE") == "true"
+    System.get_env("HUBSPOT_SKIP_SIGNATURE") == "true" and
+      Application.get_env(:throttle, :env) in [:dev, :test]
   end
 end

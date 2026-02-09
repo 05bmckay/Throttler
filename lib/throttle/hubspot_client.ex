@@ -19,6 +19,10 @@ defmodule Throttle.HubSpotClient do
       :ok ->
         :ok
 
+      {:error, :unauthorized} ->
+        # Don't retry on 401 — bubble up for token refresh at caller level
+        {:error, :unauthorized}
+
       {:error, {:rate_limited, retry_after}} when retries > 0 ->
         Logger.warning(fn ->
           "Rate limited by HubSpot API, will snooze for #{retry_after}s (#{retries} retries left)"
@@ -73,6 +77,10 @@ defmodule Throttle.HubSpotClient do
         Logger.debug("Batch complete request successful")
         :ok
 
+      {:ok, %Finch.Response{status: 401, body: _response_body}} ->
+        Logger.warning("HubSpot API returned 401 Unauthorized")
+        {:error, :unauthorized}
+
       {:ok, %Finch.Response{status: 403, body: response_body}} ->
         # Handle Cloudflare/other 403 block specifically
         ray_id = extract_cloudflare_ray_id(response_body)
@@ -119,8 +127,14 @@ defmodule Throttle.HubSpotClient do
   defp extract_retry_after(headers) do
     headers
     |> Enum.find_value(fn
-      {"Retry-After", value} -> String.to_integer(value)
-      _ -> nil
+      {"Retry-After", value} ->
+        case Integer.parse(value) do
+          {int, _} -> int
+          :error -> nil
+        end
+
+      _ ->
+        nil
     end)
   end
 

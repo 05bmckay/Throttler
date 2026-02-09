@@ -30,7 +30,9 @@ defmodule Throttle.ActionBatcher do
       timer_ref: nil,
       # Async flush state
       flushing: false,
-      flush_task_ref: nil
+      flush_task_ref: nil,
+      # Track actions in-flight to prevent data loss if flush task crashes
+      pending_flush: []
     }
 
     {:ok, schedule_flush(state)}
@@ -39,12 +41,15 @@ defmodule Throttle.ActionBatcher do
   # P0-1: Flush remaining buffer on shutdown to prevent data loss
   # Uses synchronous flush to ensure data is saved before shutdown
   def terminate(reason, state) do
+    merged_buffer = state.pending_flush ++ state.buffer
+    merged_size = state.buffer_size + length(state.pending_flush)
+
     Logger.info(
-      "ActionBatcher terminating (#{inspect(reason)}), flushing #{state.buffer_size} buffered actions"
+      "ActionBatcher terminating (#{inspect(reason)}), flushing #{merged_size} actions (#{state.buffer_size} buffered + #{length(state.pending_flush)} in-flight)"
     )
 
-    if state.buffer_size > 0 do
-      do_flush_sync(state)
+    if merged_size > 0 do
+      do_flush_sync(%{state | buffer: merged_buffer, buffer_size: merged_size})
     end
 
     :ok
@@ -88,7 +93,8 @@ defmodule Throttle.ActionBatcher do
       | queues: final_queues,
         flush_interval: new_interval,
         flushing: false,
-        flush_task_ref: nil
+        flush_task_ref: nil,
+        pending_flush: []
     }
 
     {:noreply, new_state}
@@ -96,9 +102,24 @@ defmodule Throttle.ActionBatcher do
 
   def handle_info({:DOWN, ref, :process, _pid, reason}, state) when is_reference(ref) do
     if ref == state.flush_task_ref do
-      Logger.error("Flush task crashed: #{inspect(reason)}, will retry on next flush cycle")
+      recovered_count = length(state.pending_flush)
 
-      {:noreply, %{state | flushing: false, flush_task_ref: nil}}
+      Logger.error(
+        "Flush task crashed: #{inspect(reason)}, recovering #{recovered_count} actions back to buffer"
+      )
+
+      recovered_buffer = state.pending_flush ++ state.buffer
+      recovered_size = state.buffer_size + recovered_count
+
+      {:noreply,
+       %{
+         state
+         | flushing: false,
+           flush_task_ref: nil,
+           pending_flush: [],
+           buffer: recovered_buffer,
+           buffer_size: recovered_size
+       }}
     else
       {:noreply, state}
     end
@@ -128,7 +149,8 @@ defmodule Throttle.ActionBatcher do
         | buffer: remaining_buffer,
           buffer_size: remaining_size,
           flushing: true,
-          flush_task_ref: task.ref
+          flush_task_ref: task.ref,
+          pending_flush: actions_to_flush
       }
     end
   end

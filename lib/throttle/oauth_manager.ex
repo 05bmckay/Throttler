@@ -56,7 +56,11 @@ defmodule Throttle.OAuthManager do
     case Finch.request(request, Throttle.Finch, receive_timeout: 15_000, request_timeout: 30_000) do
       {:ok, %Finch.Response{status: 200, body: resp_body}} ->
         Logger.info("Successfully fetched token details")
-        {:ok, Jason.decode!(resp_body)}
+
+        case Jason.decode(resp_body) do
+          {:ok, decoded} -> {:ok, decoded}
+          {:error, _} -> {:error, "Failed to decode token details response"}
+        end
 
       {:ok, %Finch.Response{status: status, body: resp_body}} ->
         Logger.error("Failed to fetch token details. Status code: #{status}, body: #{resp_body}")
@@ -84,17 +88,22 @@ defmodule Throttle.OAuthManager do
 
       token ->
         Logger.info("Token found for portal: #{portal_id}")
-        decrypted_token = SecureOAuthToken.decrypt_tokens(token)
 
-        if token_expired?(decrypted_token) or token_expiring_soon?(decrypted_token) do
-          Logger.info("Token expired or expiring soon for portal: #{portal_id}, refreshing")
+        case SecureOAuthToken.decrypt_tokens(token) do
+          {:ok, decrypted_token} ->
+            if token_expired?(decrypted_token) or token_expiring_soon?(decrypted_token) do
+              Logger.info("Token expired or expiring soon for portal: #{portal_id}, refreshing")
 
-          Throttle.OAuthRefreshLock.refresh_if_needed(portal_id, fn ->
-            refresh_token(decrypted_token)
-          end)
-        else
-          Logger.info("Token valid for portal: #{portal_id}")
-          {:ok, decrypted_token}
+              Throttle.OAuthRefreshLock.refresh_if_needed(portal_id, fn ->
+                refresh_token(decrypted_token)
+              end)
+            else
+              Logger.info("Token valid for portal: #{portal_id}")
+              {:ok, decrypted_token}
+            end
+
+          {:error, _reason} ->
+            {:error, :token_decryption_failed}
         end
     end
   end
@@ -140,23 +149,34 @@ defmodule Throttle.OAuthManager do
             }
           end
 
-        case update_token(token, new_attrs) do
-          {:ok, updated_token} ->
-            Logger.info("Token updated in database for portal: #{token.portal_id}")
-            decrypted_token = SecureOAuthToken.decrypt_tokens(updated_token)
-            {:ok, decrypted_token}
-
-          {:error, reason} ->
-            Logger.error(
-              "Failed to update token in database for portal #{token.portal_id}: #{inspect(reason)}"
-            )
-
-            {:error, :token_update_failed}
-        end
+        update_token_with_retry(token, new_attrs, _attempts = 3)
 
       {:error, reason} ->
         Logger.error("Failed to refresh token for portal #{token.portal_id}: #{inspect(reason)}")
         {:error, :token_refresh_failed}
+    end
+  end
+
+  defp update_token_with_retry(token, attrs, attempts) when attempts > 0 do
+    case update_token(token, attrs) do
+      {:ok, updated_token} ->
+        Logger.info("Token updated in database for portal: #{token.portal_id}")
+        SecureOAuthToken.decrypt_tokens(updated_token)
+
+      {:error, reason} when attempts > 1 ->
+        Logger.warning(
+          "Failed to update token for portal #{token.portal_id} (#{attempts - 1} retries left): #{inspect(reason)}"
+        )
+
+        Process.sleep(500)
+        update_token_with_retry(token, attrs, attempts - 1)
+
+      {:error, reason} ->
+        Logger.error(
+          "Failed to update token in database for portal #{token.portal_id} after retries: #{inspect(reason)}"
+        )
+
+        {:error, :token_update_failed}
     end
   end
 
@@ -212,8 +232,11 @@ defmodule Throttle.OAuthManager do
     case Finch.request(request, Throttle.Finch, receive_timeout: 15_000, request_timeout: 30_000) do
       {:ok, %Finch.Response{status: 200, body: resp_body}} ->
         Logger.info("Token refresh successful")
-        decoded_body = Jason.decode!(resp_body)
-        {:ok, decoded_body}
+
+        case Jason.decode(resp_body) do
+          {:ok, decoded_body} -> {:ok, decoded_body}
+          {:error, _} -> {:error, "Failed to decode refresh token response"}
+        end
 
       {:ok, %Finch.Response{status: status, body: resp_body}} ->
         Logger.error("HubSpot API returned non-200 status code: #{status}, body: #{resp_body}")

@@ -2,11 +2,11 @@ defmodule Throttle.PortalQueue do
   use GenServer
   require Logger
   alias Throttle.OAuthManager
+  alias Throttle.ActionQueries
 
-  # Flush after 900 milliseconds
   @flush_interval 900
-  # Flush if queue reaches 100 actions
   @max_batch_size 100
+  @max_queue_size 10_000
 
   ## Client API
 
@@ -31,17 +31,27 @@ defmodule Throttle.PortalQueue do
   end
 
   def handle_cast({:enqueue, executions}, state) do
-    new_queue =
-      Enum.reduce(executions, state.queue, fn execution, queue ->
-        :queue.in(execution, queue)
-      end)
+    current_len = :queue.len(state.queue)
 
-    Logger.debug("Queue after enqueue: #{inspect(new_queue)}")
+    if current_len + length(executions) > @max_queue_size do
+      Logger.warning(
+        "PortalQueue for portal #{state.portal_id} at capacity (#{current_len}/#{@max_queue_size}), dropping #{length(executions)} executions"
+      )
 
-    state = %{state | queue: new_queue}
-    state = maybe_schedule_flush(state)
-    state = maybe_flush(state)
-    {:noreply, state}
+      action_ids = Enum.map(executions, & &1.id)
+      ActionQueries.handle_batch_failure(action_ids, "queue_overflow")
+      {:noreply, state}
+    else
+      new_queue =
+        Enum.reduce(executions, state.queue, fn execution, queue ->
+          :queue.in(execution, queue)
+        end)
+
+      state = %{state | queue: new_queue}
+      state = maybe_schedule_flush(state)
+      state = maybe_flush(state)
+      {:noreply, state}
+    end
   end
 
   def handle_info(:flush, state) do
@@ -108,16 +118,49 @@ defmodule Throttle.PortalQueue do
 
   defp send_batch(portal_id, executions) do
     Logger.info("Sending batch for portal #{portal_id} with #{length(executions)} executions")
+    action_ids = Enum.map(executions, & &1.id)
 
     case OAuthManager.get_token(portal_id) do
       {:ok, token} ->
         case process_with_token(executions, token) do
-          :ok -> :ok
-          {:error, reason} -> Logger.error("Error processing batch: #{inspect(reason)}")
+          :ok ->
+            :ok
+
+          {:error, :unauthorized} ->
+            Logger.warning("Token expired for portal #{portal_id}, refreshing and retrying once")
+
+            case OAuthManager.get_token(portal_id) do
+              {:ok, new_token} ->
+                case process_with_token(executions, new_token) do
+                  :ok ->
+                    :ok
+
+                  {:error, retry_reason} ->
+                    ActionQueries.handle_batch_failure(action_ids, inspect(retry_reason))
+                end
+
+              {:error, refresh_reason} ->
+                ActionQueries.handle_batch_failure(
+                  action_ids,
+                  "token_refresh_failed: #{inspect(refresh_reason)}"
+                )
+            end
+
+          {:error, {:rate_limited, _retry_after}} ->
+            Logger.warning(
+              "Batch rate limited for portal #{portal_id}, re-enqueuing #{length(executions)} executions"
+            )
+
+            GenServer.cast(via_tuple(portal_id), {:enqueue, executions})
+
+          {:error, reason} ->
+            Logger.error("Error processing batch for portal #{portal_id}: #{inspect(reason)}")
+            ActionQueries.handle_batch_failure(action_ids, inspect(reason))
         end
 
       {:error, reason} ->
         Logger.error("Error getting token for portal #{portal_id}: #{inspect(reason)}")
+        ActionQueries.handle_batch_failure(action_ids, "token_error")
     end
   end
 

@@ -17,7 +17,8 @@ defmodule Throttle.QueueRunner do
 
   alias Throttle.ActionQueries
 
-  @in_flight_expiry_ms 5_000
+  # Must exceed HubSpotClient's request_timeout (30s) + retry delays (3 * 2s)
+  @in_flight_expiry_ms 45_000
   @idle_timeout_ms 10_000
 
   ## Client API
@@ -145,7 +146,16 @@ defmodule Throttle.QueueRunner do
   end
 
   defp extract_portal_id(execution) do
-    execution.queue_id |> String.split(":") |> Enum.at(1) |> String.to_integer()
+    case execution.queue_id |> String.split(":") |> Enum.at(1) do
+      nil ->
+        0
+
+      val ->
+        case Integer.parse(val) do
+          {int, _} -> int
+          :error -> 0
+        end
+    end
   end
 
   defp prune_expired(in_flight, now) do
@@ -153,7 +163,11 @@ defmodule Throttle.QueueRunner do
   end
 
   defp calculate_delay_ms(time, period) do
-    time_int = String.to_integer(time)
+    time_int =
+      case Integer.parse(to_string(time)) do
+        {int, _} -> int
+        :error -> 1
+      end
 
     case period do
       "seconds" ->

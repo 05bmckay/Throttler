@@ -7,9 +7,8 @@ defmodule Throttle do
   if it comes from the database, an external API or others.
   """
 
-  import Ecto.Query
   alias Throttle.{Repo, OAuthManager, QueueManager, ActionBatcher, ConfigCache}
-  alias Throttle.Schemas.{ActionExecution, ThrottleConfig}
+  alias Throttle.Schemas.ThrottleConfig
   require Logger
 
   @doc """
@@ -24,18 +23,28 @@ defmodule Throttle do
   Creates or updates a throttle configuration.
   """
   def upsert_throttle_config(attrs) do
-    %ThrottleConfig{}
-    |> ThrottleConfig.changeset(attrs)
-    |> Repo.insert(
-      on_conflict: [
-        set: [
-          max_throughput: attrs.max_throughput,
-          time_period: attrs.time_period,
-          time_unit: attrs.time_unit
-        ]
-      ],
-      conflict_target: [:portal_id, :action_id]
-    )
+    result =
+      %ThrottleConfig{}
+      |> ThrottleConfig.changeset(attrs)
+      |> Repo.insert(
+        on_conflict: [
+          set: [
+            max_throughput: attrs.max_throughput,
+            time_period: attrs.time_period,
+            time_unit: attrs.time_unit
+          ]
+        ],
+        conflict_target: [:portal_id, :action_id]
+      )
+
+    case result do
+      {:ok, config} ->
+        ConfigCache.bust_cache(config.portal_id, config.action_id)
+        {:ok, config}
+
+      error ->
+        error
+    end
   end
 
   @doc """
@@ -48,17 +57,6 @@ defmodule Throttle do
   def create_action_execution(attrs) do
     ActionBatcher.add_action(attrs)
   end
-
-
-  # def get_next_action_batch(queue_id, limit) do
-  #    Throttle.ThrottleWorker.get_next_action_batch(queue_id, limit)
-  #  end
-
-    def mark_actions_processed(action_ids) do
-      result = from(a in ActionExecution, where: a.id in ^action_ids)
-      |> Repo.update_all(set: [processed: true])
-      result
-    end
 
   @doc """
   Creates a queue identifier from HubSpot parameters.

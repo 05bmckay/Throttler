@@ -66,6 +66,8 @@ defmodule Throttle.ThrottleWorker do
       )
     end
 
+    ActionQueries.mark_actions_in_flight(action_ids)
+
     case HubSpotClient.send_batch_complete_with_retry(unique_executions, token.access_token) do
       :ok ->
         # Success: Mark processed and clear error fields
