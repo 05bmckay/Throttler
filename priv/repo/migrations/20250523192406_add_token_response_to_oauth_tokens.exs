@@ -3,7 +3,7 @@ defmodule Throttle.Repo.Migrations.AddTokenResponseToOauthTokens do
 
   def change do
     alter table(:oauth_tokens) do
-      add :token_response, :map
+      add_if_not_exists(:token_response, :map)
     end
   end
 end

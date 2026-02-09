@@ -12,6 +12,6 @@ defmodule Throttle.Repo.Migrations.AddPerformanceIndexes do
     )
 
     # P2-8: Unique index on oauth_tokens.portal_id — prevents duplicate tokens per portal.
-    create(unique_index(:oauth_tokens, [:portal_id]))
+    create_if_not_exists(unique_index(:oauth_tokens, [:portal_id]))
   end
 end

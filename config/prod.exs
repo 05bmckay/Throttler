@@ -1,48 +1,15 @@
 import Config
 
-# Configure your database
-config :throttle, Throttle.Repo,
-  url: System.get_env("DATABASE_URL"),
-  show_sensitive_data_on_connection_error: true,
-  pool_size: 90,
-  ssl: true,
-  ssl_opts: [
-    # TODO: Use verify: :verify_peer with cacerts: :public_key.cacerts_get() on OTP 25+
-    verify: :verify_none
-  ]
+# Compile-time only. All runtime secrets (DATABASE_URL, SECRET_KEY_BASE, etc.)
+# live in config/runtime.exs — do NOT add System.get_env() calls here.
 
-# For development, we disable any cache and enable
-# debugging and code reloading.
 config :throttle, ThrottleWeb.Endpoint,
-  http: [
-    port: String.to_integer(System.get_env("PORT") || "4000"),
-    transport_options: [socket_opts: [:inet6]]
-  ],
-  check_origin: false,
-  debug_errors: true,
-  secret_key_base:
-    System.get_env("SECRET_KEY_BASE") ||
-      raise("SECRET_KEY_BASE env var is required in production"),
-  url: [host: System.get_env("BASE_URL"), port: 443, scheme: "https"],
-  watchers: []
+  cache_static_manifest: "priv/static/cache_manifest.json",
+  server: true
 
 config :logger,
-  level: :warning
+  level: :info
 
 config :logger, :console,
   format: "$time $metadata[$level] $message\n",
   metadata: [:request_id]
-
-# Set a higher stacktrace during development. Avoid configuring such
-# in production as building large stacktraces may be expensive.
-config :phoenix, :stacktrace_depth, 20
-
-# Initialize plugs at runtime for faster development compilation
-config :phoenix, :plug_init_mode, :runtime
-
-# HubSpot and encryption configuration
-config :throttle,
-  hubspot_client_id: System.get_env("HUBSPOT_CLIENT_ID"),
-  hubspot_client_secret: System.get_env("HUBSPOT_CLIENT_SECRET"),
-  hubspot_redirect_uri: "https://throttler-app.cartermckay.com/api/oauth/callback",
-  encryption_key: System.get_env("ENCRYPTION_KEY")
