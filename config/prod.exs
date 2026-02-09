@@ -7,25 +7,27 @@ config :throttle, Throttle.Repo,
   pool_size: 90,
   ssl: true,
   ssl_opts: [
-     verify: :verify_none
+    # TODO: Use verify: :verify_peer with cacerts: :public_key.cacerts_get() on OTP 25+
+    verify: :verify_none
   ]
 
 # For development, we disable any cache and enable
 # debugging and code reloading.
 config :throttle, ThrottleWeb.Endpoint,
   http: [
-      port: String.to_integer(System.get_env("PORT") || "4000"),
-      transport_options: [socket_opts: [:inet6]]
+    port: String.to_integer(System.get_env("PORT") || "4000"),
+    transport_options: [socket_opts: [:inet6]]
   ],
   check_origin: false,
   debug_errors: true,
-  secret_key_base: "MIk2Of0mNRCj42SSrjOexYPu8hYSCz0iQ3MEZMcWoAQ=",
+  secret_key_base:
+    System.get_env("SECRET_KEY_BASE") ||
+      raise("SECRET_KEY_BASE env var is required in production"),
   url: [host: System.get_env("BASE_URL"), port: 443, scheme: "https"],
   watchers: []
 
-
 config :logger,
-  level: :warn
+  level: :warning
 
 config :logger, :console,
   format: "$time $metadata[$level] $message\n",
@@ -37,12 +39,6 @@ config :phoenix, :stacktrace_depth, 20
 
 # Initialize plugs at runtime for faster development compilation
 config :phoenix, :plug_init_mode, :runtime
-
-# Configure Oban
-config :throttle, Oban,
-  repo: YourApp.Repo,
-  plugins: [Oban.Plugins.Pruner],
-  queues: [default: 10]
 
 # HubSpot and encryption configuration
 config :throttle,

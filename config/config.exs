@@ -9,7 +9,7 @@ config :throttle, ThrottleWeb.Endpoint,
   url: [host: "localhost"],
   render_errors: [view: ThrottleWeb.ErrorView, accepts: ~w(json), layout: false],
   pubsub_server: Throttle.PubSub,
-  live_view: [signing_salt: "CHANGE_ME"]
+  live_view: [signing_salt: "t8Kx9RzP"]
 
 # Configures Elixir's Logger
 config :logger,

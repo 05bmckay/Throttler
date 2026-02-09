@@ -7,7 +7,8 @@ config :throttle, Throttle.Repo,
   pool_size: 5,
   ssl: true,
   ssl_opts: [
-     verify: :verify_none
+    # TODO: Use verify: :verify_peer with cacerts: :public_key.cacerts_get() on OTP 25+
+    verify: :verify_none
   ]
 
 # For development, we disable any cache and enable
@@ -17,7 +18,11 @@ config :throttle, ThrottleWeb.Endpoint,
   check_origin: false,
   code_reloader: true,
   debug_errors: true,
-  secret_key_base: "MIk2Of0mNRCj42SSrjOexYPu8hYSCz0iQ3MEZMcWoAQ=",
+  secret_key_base:
+    System.get_env(
+      "SECRET_KEY_BASE",
+      "dev-only-secret-key-base-must-be-at-least-64-bytes-long-for-phoenix-to-accept-it!!"
+    ),
   url: [host: "throttler.cartermckay.com", port: 443, scheme: "https"],
   watchers: []
 
@@ -34,12 +39,6 @@ config :phoenix, :stacktrace_depth, 20
 
 # Initialize plugs at runtime for faster development compilation
 config :phoenix, :plug_init_mode, :runtime
-
-# Configure Oban
-config :throttle, Oban,
-  repo: YourApp.Repo,
-  plugins: [Oban.Plugins.Pruner],
-  queues: [default: 10]
 
 # HubSpot and encryption configuration
 config :throttle,
