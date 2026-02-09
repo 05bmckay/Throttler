@@ -401,32 +401,26 @@ defmodule Throttle.ThrottleWorker do
       )
   end
 
-  # New function to handle batch failure updates
   defp handle_batch_failure(action_ids, reason) do
-    now = DateTime.utc_now()
+    hold_until = DateTime.add(DateTime.utc_now(), @hold_duration_seconds, :second)
+    threshold = @max_consecutive_failures
 
-    # We need to update based on the current state in the DB, which requires a more complex update.
-    # Easiest way is often to fetch, update, and save, but that's inefficient for batches.
-    # Using update_all with a CASE statement or fragment is possible but complex.
-    # Let's do a simpler update_all for now, acknowledging it might reset the hold period
-    # if an action fails again while already on hold.
-
-    # Increment consecutive_failures and set reason
-    Repo.update_all(
-      from(a in ActionExecution, where: a.id in ^action_ids),
-      inc: [consecutive_failures: 1],
-      set: [last_failure_reason: reason]
+    from(a in ActionExecution,
+      where: a.id in ^action_ids,
+      update: [
+        set: [
+          consecutive_failures: fragment("consecutive_failures + 1"),
+          last_failure_reason: ^reason,
+          on_hold_until:
+            fragment(
+              "CASE WHEN consecutive_failures + 1 >= ? THEN ? ELSE on_hold_until END",
+              ^threshold,
+              ^hold_until
+            )
+        ]
+      ]
     )
-
-    # Check which actions have exceeded the failure threshold and put them on hold
-    hold_until = DateTime.add(now, @hold_duration_seconds, :second)
-
-    Repo.update_all(
-      from(a in ActionExecution,
-        where: a.id in ^action_ids and a.consecutive_failures >= @max_consecutive_failures
-      ),
-      set: [on_hold_until: hold_until]
-    )
+    |> Repo.update_all([])
   end
 
   defp schedule_next_job(queue_id, max_throughput, time, period) do
