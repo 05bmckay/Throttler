@@ -249,6 +249,14 @@ defmodule Throttle.ThrottleWorker do
         # Success: Mark processed and clear error fields
         Logger.info("Batch complete sent successfully for actions: #{inspect(action_ids)}")
         mark_actions_processed_and_clear_errors(action_ids)
+
+        # Emit telemetry event for successful action processing
+        :telemetry.execute(
+          [:throttle, :action, :processed],
+          %{count: length(unique_executions)},
+          %{portal_id: token.portal_id}
+        )
+
         :ok
 
       {:error, {:http_error, 403, _body}} ->
@@ -347,6 +355,14 @@ defmodule Throttle.ThrottleWorker do
       {:ok, %Finch.Response{status: 429, headers: response_headers}} ->
         retry_after = extract_retry_after(response_headers) || 60
         Logger.warning("Rate limited by HubSpot API (429), retry after #{retry_after} seconds")
+
+        # Emit telemetry event for rate limiting
+        :telemetry.execute(
+          [:throttle, :api, :rate_limited],
+          %{retry_after: retry_after},
+          %{}
+        )
+
         {:error, {:rate_limited, retry_after}}
 
       {:ok, %Finch.Response{status: status, body: response_body}} ->
