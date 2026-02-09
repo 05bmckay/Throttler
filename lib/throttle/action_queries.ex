@@ -16,7 +16,7 @@ defmodule Throttle.ActionQueries do
   # Hold for 30 minutes (1800 seconds)
   @hold_duration_seconds 1800
 
-  def get_next_action_batch(queue_id, max_throughput) do
+  def get_next_action_batch(queue_id, max_throughput, exclude_ids \\ []) do
     throughput = String.to_integer(max_throughput)
     now = DateTime.utc_now()
 
@@ -24,17 +24,16 @@ defmodule Throttle.ActionQueries do
       from(a in ActionExecution,
         where: a.queue_id == ^queue_id and not a.processed,
         where: is_nil(a.on_hold_until) or a.on_hold_until <= ^now,
+        where: a.id not in ^exclude_ids,
         order_by: [asc: a.inserted_at],
         limit: ^throughput
       )
 
     case Repo.all(query) do
       [] ->
-        Logger.debug("No executions found for queue #{queue_id}")
         {:ok, []}
 
       executions ->
-        Logger.debug("Found #{length(executions)} executions to process")
         {:ok, executions}
     end
   end

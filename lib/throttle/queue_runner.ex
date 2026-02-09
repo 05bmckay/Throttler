@@ -17,6 +17,8 @@ defmodule Throttle.QueueRunner do
 
   alias Throttle.ActionQueries
 
+  @in_flight_expiry_ms 5_000
+
   ## Client API
 
   @doc """
@@ -55,7 +57,8 @@ defmodule Throttle.QueueRunner do
       time: config.time,
       period: config.period,
       delay_ms: calculate_delay_ms(config.time, config.period),
-      timer_ref: nil
+      timer_ref: nil,
+      in_flight: %{}
     }
 
     Logger.info("QueueRunner started for #{queue_id} (every #{state.delay_ms}ms)")
@@ -66,24 +69,34 @@ defmodule Throttle.QueueRunner do
   end
 
   def handle_info(:tick, state) do
+    now = System.monotonic_time(:millisecond)
+    in_flight = prune_expired(state.in_flight, now)
+    exclude_ids = Map.keys(in_flight)
+
     try do
-      case ActionQueries.get_next_action_batch(state.queue_id, state.max_throughput) do
-        {:ok, []} ->
+      case ActionQueries.get_next_action_batch(state.queue_id, state.max_throughput, exclude_ids) do
+        {:ok, []} when map_size(in_flight) == 0 ->
           Logger.info("QueueRunner #{state.queue_id} drained, stopping.")
           {:stop, :normal, state}
 
+        {:ok, []} ->
+          timer_ref = Process.send_after(self(), :tick, state.delay_ms)
+          {:noreply, %{state | timer_ref: timer_ref, in_flight: in_flight}}
+
         {:ok, executions} ->
+          new_entries = Map.new(executions, fn e -> {e.id, now} end)
+          updated_in_flight = Map.merge(in_flight, new_entries)
+
           process_executions(executions)
           timer_ref = Process.send_after(self(), :tick, state.delay_ms)
-          {:noreply, %{state | timer_ref: timer_ref}}
+          {:noreply, %{state | timer_ref: timer_ref, in_flight: updated_in_flight}}
       end
     rescue
       e ->
         Logger.error("QueueRunner #{state.queue_id} tick error: #{Exception.message(e)}")
 
-        # Schedule next tick anyway — don't let transient errors kill the loop
         timer_ref = Process.send_after(self(), :tick, state.delay_ms)
-        {:noreply, %{state | timer_ref: timer_ref}}
+        {:noreply, %{state | timer_ref: timer_ref, in_flight: in_flight}}
     end
   end
 
@@ -120,6 +133,10 @@ defmodule Throttle.QueueRunner do
 
   defp extract_portal_id(execution) do
     execution.queue_id |> String.split(":") |> Enum.at(1) |> String.to_integer()
+  end
+
+  defp prune_expired(in_flight, now) do
+    Map.filter(in_flight, fn {_id, ts} -> now - ts < @in_flight_expiry_ms end)
   end
 
   defp calculate_delay_ms(time, period) do
