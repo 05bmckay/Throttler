@@ -6,6 +6,9 @@ defmodule Throttle.Application do
   use Application
 
   def start(_type, _args) do
+    # Attach Oban's default telemetry logger for observability
+    Oban.Telemetry.attach_default_logger(:info)
+
     children = [
       # Start the Ecto repository
       Throttle.Repo,
@@ -15,8 +18,10 @@ defmodule Throttle.Application do
       {Phoenix.PubSub, name: Throttle.PubSub},
       # Start the Endpoint (http/https)
       ThrottleWeb.Endpoint,
+      {Task.Supervisor, name: Throttle.FlushTaskSupervisor},
       Throttle.ActionBatcher,
       Throttle.ConfigCache,
+      Throttle.OAuthRefreshLock,
       {Finch,
        name: Throttle.Finch,
        pools: %{

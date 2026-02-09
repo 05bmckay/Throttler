@@ -27,20 +27,24 @@ defmodule Throttle.ActionBatcher do
       buffer_size: 0,
       queues: %{},
       flush_interval: @max_flush_interval,
-      timer_ref: nil
+      timer_ref: nil,
+      # Async flush state
+      flushing: false,
+      flush_task_ref: nil
     }
 
     {:ok, schedule_flush(state)}
   end
 
   # P0-1: Flush remaining buffer on shutdown to prevent data loss
+  # Uses synchronous flush to ensure data is saved before shutdown
   def terminate(reason, state) do
     Logger.info(
       "ActionBatcher terminating (#{inspect(reason)}), flushing #{state.buffer_size} buffered actions"
     )
 
     if state.buffer_size > 0 do
-      flush_buffer(state)
+      do_flush_sync(state)
     end
 
     :ok
@@ -67,26 +71,77 @@ defmodule Throttle.ActionBatcher do
     {:noreply, schedule_flush(new_state)}
   end
 
+  def handle_info({ref, {flushed_count, final_queues}}, state)
+      when is_reference(ref) do
+    Process.demonitor(ref, [:flush])
+
+    new_interval = adjust_flush_interval(flushed_count, state.flush_interval)
+
+    :telemetry.execute(
+      [:throttle, :batch, :flushed],
+      %{count: flushed_count},
+      %{interval: state.flush_interval}
+    )
+
+    new_state = %{
+      state
+      | queues: final_queues,
+        flush_interval: new_interval,
+        flushing: false,
+        flush_task_ref: nil
+    }
+
+    {:noreply, new_state}
+  end
+
+  def handle_info({:DOWN, ref, :process, _pid, reason}, state) when is_reference(ref) do
+    if ref == state.flush_task_ref do
+      Logger.error("Flush task crashed: #{inspect(reason)}, will retry on next flush cycle")
+
+      {:noreply, %{state | flushing: false, flush_task_ref: nil}}
+    else
+      {:noreply, state}
+    end
+  end
+
   defp flush_buffer(state) do
-    {actions_to_flush, remaining_buffer} = Enum.split(state.buffer, @buffer_size)
-    remaining_size = max(state.buffer_size - @buffer_size, 0)
+    if state.flushing do
+      Logger.debug("Flush already in progress, skipping this cycle")
+      state
+    else
+      {actions_to_flush, remaining_buffer} = Enum.split(state.buffer, @buffer_size)
+      remaining_size = max(state.buffer_size - @buffer_size, 0)
+
+      new_queues =
+        Enum.reduce(actions_to_flush, state.queues, fn action, acc ->
+          Map.update(acc, action.queue_id, [action], &[action | &1])
+        end)
+
+      task =
+        Task.Supervisor.async_nolink(Throttle.FlushTaskSupervisor, fn ->
+          {final_queues, flushed_count} = process_queues(new_queues)
+          {flushed_count, final_queues}
+        end)
+
+      %{
+        state
+        | buffer: remaining_buffer,
+          buffer_size: remaining_size,
+          flushing: true,
+          flush_task_ref: task.ref
+      }
+    end
+  end
+
+  defp do_flush_sync(state) do
+    {actions_to_flush, _remaining} = Enum.split(state.buffer, @buffer_size)
 
     new_queues =
       Enum.reduce(actions_to_flush, state.queues, fn action, acc ->
         Map.update(acc, action.queue_id, [action], &[action | &1])
       end)
 
-    {final_queues, flushed_count} = process_queues(new_queues)
-
-    new_interval = adjust_flush_interval(flushed_count, state.flush_interval)
-
-    %{
-      state
-      | buffer: remaining_buffer,
-        buffer_size: remaining_size,
-        queues: final_queues,
-        flush_interval: new_interval
-    }
+    process_queues(new_queues)
   end
 
   defp process_queues(queues) do
