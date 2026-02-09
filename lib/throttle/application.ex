@@ -17,6 +17,11 @@ defmodule Throttle.Application do
       ThrottleWeb.Endpoint,
       Throttle.ActionBatcher,
       Throttle.ConfigCache,
+      {Finch,
+       name: Throttle.Finch,
+       pools: %{
+         "https://api.hubapi.com" => [size: 25, count: 2]
+       }},
       {Oban, Application.get_env(:throttle, Oban)},
       {Registry, keys: :unique, name: Throttle.PortalRegistry},
       {DynamicSupervisor,

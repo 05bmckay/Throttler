@@ -51,18 +51,17 @@ defmodule ThrottleWeb.OAuthController do
 
     headers = [{"Content-Type", "application/x-www-form-urlencoded"}]
 
-    case HTTPoison.post(@hubspot_token_url, body, headers,
-           recv_timeout: 15_000,
-           connect_timeout: 10_000
-         ) do
-      {:ok, %HTTPoison.Response{status_code: 200, body: resp_body}} ->
+    request = Finch.build(:post, @hubspot_token_url, headers, body)
+
+    case Finch.request(request, Throttle.Finch, receive_timeout: 15_000, request_timeout: 30_000) do
+      {:ok, %Finch.Response{status: 200, body: resp_body}} ->
         {:ok, Jason.decode!(resp_body)}
 
-      {:ok, %HTTPoison.Response{status_code: status_code, body: resp_body}} ->
-        {:error, "HubSpot API returned status code: #{status_code}, body: #{resp_body}"}
+      {:ok, %Finch.Response{status: status, body: resp_body}} ->
+        {:error, "HubSpot API returned status code: #{status}, body: #{resp_body}"}
 
-      {:error, %HTTPoison.Error{reason: reason}} ->
-        {:error, "HubSpot API request failed: #{reason}"}
+      {:error, exception} ->
+        {:error, "HubSpot API request failed: #{Exception.message(exception)}"}
     end
   end
 end

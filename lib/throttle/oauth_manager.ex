@@ -9,8 +9,6 @@ defmodule Throttle.OAuthManager do
   """
 
   @hubspot_base_url "https://api.hubapi.com"
-  @http_recv_timeout 15_000
-  @http_connect_timeout 10_000
 
   def store_token(token_data) do
     Logger.info("Attempting to store token")
@@ -53,24 +51,24 @@ defmodule Throttle.OAuthManager do
     url = "#{@hubspot_base_url}/oauth/v1/access-tokens/#{access_token}"
     headers = [{"Authorization", "Bearer #{access_token}"}]
 
-    case HTTPoison.get(url, headers,
-           recv_timeout: @http_recv_timeout,
-           connect_timeout: @http_connect_timeout
-         ) do
-      {:ok, %HTTPoison.Response{status_code: 200, body: resp_body}} ->
+    request = Finch.build(:get, url, headers)
+
+    case Finch.request(request, Throttle.Finch, receive_timeout: 15_000, request_timeout: 30_000) do
+      {:ok, %Finch.Response{status: 200, body: resp_body}} ->
         Logger.info("Successfully fetched token details")
         {:ok, Jason.decode!(resp_body)}
 
-      {:ok, %HTTPoison.Response{status_code: status_code, body: resp_body}} ->
+      {:ok, %Finch.Response{status: status, body: resp_body}} ->
+        Logger.error("Failed to fetch token details. Status code: #{status}, body: #{resp_body}")
+
+        {:error, "Failed to fetch token details. Status code: #{status}, body: #{resp_body}"}
+
+      {:error, exception} ->
         Logger.error(
-          "Failed to fetch token details. Status code: #{status_code}, body: #{resp_body}"
+          "HTTP request failed when fetching token details: #{Exception.message(exception)}"
         )
 
-        {:error, "Failed to fetch token details. Status code: #{status_code}, body: #{resp_body}"}
-
-      {:error, %HTTPoison.Error{reason: reason}} ->
-        Logger.error("HTTP request failed when fetching token details: #{reason}")
-        {:error, "Failed to fetch token details: #{reason}"}
+        {:error, "Failed to fetch token details: #{Exception.message(exception)}"}
     end
   end
 
@@ -230,25 +228,22 @@ defmodule Throttle.OAuthManager do
 
     Logger.debug("Sending refresh token request to HubSpot")
 
-    case HTTPoison.post(@hubspot_oauth_url, body, headers,
-           recv_timeout: @http_recv_timeout,
-           connect_timeout: @http_connect_timeout
-         ) do
-      {:ok, %HTTPoison.Response{status_code: 200, body: resp_body}} ->
+    request = Finch.build(:post, @hubspot_oauth_url, headers, body)
+
+    case Finch.request(request, Throttle.Finch, receive_timeout: 15_000, request_timeout: 30_000) do
+      {:ok, %Finch.Response{status: 200, body: resp_body}} ->
         Logger.info("Token refresh successful")
         decoded_body = Jason.decode!(resp_body)
         {:ok, decoded_body}
 
-      {:ok, %HTTPoison.Response{status_code: status_code, body: resp_body}} ->
-        Logger.error(
-          "HubSpot API returned non-200 status code: #{status_code}, body: #{resp_body}"
-        )
+      {:ok, %Finch.Response{status: status, body: resp_body}} ->
+        Logger.error("HubSpot API returned non-200 status code: #{status}, body: #{resp_body}")
 
-        {:error, "HubSpot API returned status code: #{status_code}, body: #{resp_body}"}
+        {:error, "HubSpot API returned status code: #{status}, body: #{resp_body}"}
 
-      {:error, %HTTPoison.Error{reason: reason}} ->
-        Logger.error("HubSpot API request failed: #{reason}")
-        {:error, "HubSpot API request failed: #{reason}"}
+      {:error, exception} ->
+        Logger.error("HubSpot API request failed: #{Exception.message(exception)}")
+        {:error, "HubSpot API request failed: #{Exception.message(exception)}"}
     end
   end
 

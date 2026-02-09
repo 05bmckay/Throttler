@@ -42,6 +42,7 @@ defmodule Throttle.MixProject do
       {:plug_cowboy, "~> 2.5"},
       {:oban, "~> 2.10"},
       {:appsignal_phoenix, "~> 2.3.9"},
+      {:finch, "~> 0.19"},
       {:hackney, "~> 1.8"},
       {:httpoison, "~> 1.8"},
       {:ex_doc, "~> 0.24", only: :dev, runtime: false}

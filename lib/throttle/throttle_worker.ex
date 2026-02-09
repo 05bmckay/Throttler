@@ -15,8 +15,6 @@ defmodule Throttle.ThrottleWorker do
   import Ecto.Query
 
   @initial_max_attempts 3
-  @http_recv_timeout 15_000
-  @http_connect_timeout 10_000
   @max_snooze_attempts 20
 
   @impl Oban.Worker
@@ -332,48 +330,44 @@ defmodule Throttle.ThrottleWorker do
       {"Content-Type", "application/json"}
     ]
 
-    case HTTPoison.post(url, body, headers,
-           recv_timeout: @http_recv_timeout,
-           connect_timeout: @http_connect_timeout
-         ) do
-      {:ok, %{status_code: 204}} ->
+    request = Finch.build(:post, url, headers, body)
+
+    case Finch.request(request, Throttle.Finch, receive_timeout: 15_000, request_timeout: 30_000) do
+      {:ok, %Finch.Response{status: 204}} ->
         Logger.debug("Batch complete request successful")
         :ok
 
-      {:ok, %{status_code: 403, body: response_body}} ->
+      {:ok, %Finch.Response{status: 403, body: response_body}} ->
         # Handle Cloudflare/other 403 block specifically
         ray_id = extract_cloudflare_ray_id(response_body)
         Logger.error("API request blocked (403 Forbidden). Ray ID: #{ray_id || "Not Found"}.")
         # Return error without crashing
         {:error, {:http_error, 403, response_body}}
 
-      {:ok, %{status_code: 429, headers: response_headers}} ->
+      {:ok, %Finch.Response{status: 429, headers: response_headers}} ->
         retry_after = extract_retry_after(response_headers) || 60
         Logger.warning("Rate limited by HubSpot API (429), retry after #{retry_after} seconds")
         {:error, {:rate_limited, retry_after}}
 
-      {:ok, response} ->
+      {:ok, %Finch.Response{status: status, body: response_body}} ->
         # Attempt to parse other errors as JSON, but handle potential decode errors
-        case Jason.decode(response.body) do
+        case Jason.decode(response_body) do
           {:ok, parsed_body} ->
-            Logger.error(
-              "API error: Status #{response.status_code}, Body: #{inspect(parsed_body)}"
-            )
+            Logger.error("API error: Status #{status}, Body: #{inspect(parsed_body)}")
 
-            {:error, {:api_error, response.status_code, parsed_body}}
+            {:error, {:api_error, status, parsed_body}}
 
           {:error, decode_error} ->
             Logger.error(
-              "API error: Status #{response.status_code}, Failed to decode JSON body: #{inspect(decode_error)}, Body: #{inspect(response.body)}"
+              "API error: Status #{status}, Failed to decode JSON body: #{inspect(decode_error)}, Body: #{inspect(response_body)}"
             )
 
-            {:error, {:http_error, response.status_code, response.body}}
+            {:error, {:http_error, status, response_body}}
         end
 
-      {:error, error} ->
-        Logger.error("HTTP error: #{inspect(error.reason)}")
-        # Note: a bit inconsistent, maybe {:http_client_error, reason}?
-        {:error, {:http_error, error.reason}}
+      {:error, exception} ->
+        Logger.error("HTTP error: #{Exception.message(exception)}")
+        {:error, {:http_error, Exception.message(exception)}}
     end
   end
 
