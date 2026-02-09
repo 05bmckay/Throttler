@@ -18,18 +18,22 @@ defmodule ThrottleWeb.ThrottleConfigController do
   end
 
   def show(conn, %{"portal_id" => portal_id, "action_id" => action_id}) do
-    # Convert string IDs to integers if necessary, assuming portal_id is integer
-    # Add error handling if conversion fails
-    portal_id_int = String.to_integer(portal_id)
+    case Integer.parse(portal_id) do
+      {portal_id_int, ""} ->
+        case Throttle.get_throttle_config(portal_id_int, action_id) do
+          {:error, :not_found} ->
+            conn
+            |> put_status(:not_found)
+            |> json(%{error: "Configuration not found"})
 
-    case Throttle.get_throttle_config(portal_id_int, action_id) do
-      {:error, :not_found} ->
+          {:ok, config} ->
+            render(conn, "show.json", config: config)
+        end
+
+      _ ->
         conn
-        |> put_status(:not_found)
-        |> json(%{error: "Configuration not found"})
-
-      {:ok, config} ->
-        render(conn, "show.json", config: config)
+        |> put_status(:bad_request)
+        |> json(%{error: "Invalid portal_id: must be an integer"})
     end
   end
 end

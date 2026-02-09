@@ -15,18 +15,12 @@ defmodule Throttle.Application do
       {Phoenix.PubSub, name: Throttle.PubSub},
       # Start the Endpoint (http/https)
       ThrottleWeb.Endpoint,
-      # Start the ActionBatcher
       Throttle.ActionBatcher,
-      # Start the ConfigCache
       Throttle.ConfigCache,
-      # Start the JobBatcher
-      {Throttle.JobBatcher, []},
-      # Start Oban
       {Oban, Application.get_env(:throttle, Oban)},
-      # Start Registry for portal queues
       {Registry, keys: :unique, name: Throttle.PortalRegistry},
-      # Start DynamicSupervisor for portal queues
-      {DynamicSupervisor, strategy: :one_for_one, name: Throttle.PortalQueueSupervisor}
+      {DynamicSupervisor,
+       strategy: :one_for_one, name: Throttle.PortalQueueSupervisor, max_children: 500}
     ]
 
     opts = [strategy: :one_for_one, name: Throttle.Supervisor]
