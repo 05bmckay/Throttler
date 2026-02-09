@@ -18,6 +18,7 @@ defmodule Throttle.QueueRunner do
   alias Throttle.ActionQueries
 
   @in_flight_expiry_ms 5_000
+  @idle_timeout_ms 10_000
 
   ## Client API
 
@@ -58,7 +59,8 @@ defmodule Throttle.QueueRunner do
       period: config.period,
       delay_ms: calculate_delay_ms(config.time, config.period),
       timer_ref: nil,
-      in_flight: %{}
+      in_flight: %{},
+      idle_since: nil
     }
 
     Logger.info("QueueRunner started for #{queue_id} (every #{state.delay_ms}ms)")
@@ -76,12 +78,21 @@ defmodule Throttle.QueueRunner do
     try do
       case ActionQueries.get_next_action_batch(state.queue_id, state.max_throughput, exclude_ids) do
         {:ok, []} when map_size(in_flight) == 0 ->
-          Logger.info("QueueRunner #{state.queue_id} drained, stopping.")
-          {:stop, :normal, state}
+          idle_since = state.idle_since || now
+
+          if now - idle_since >= @idle_timeout_ms do
+            Logger.info("QueueRunner #{state.queue_id} idle for #{@idle_timeout_ms}ms, stopping.")
+            {:stop, :normal, state}
+          else
+            timer_ref = Process.send_after(self(), :tick, state.delay_ms)
+
+            {:noreply,
+             %{state | timer_ref: timer_ref, in_flight: in_flight, idle_since: idle_since}}
+          end
 
         {:ok, []} ->
           timer_ref = Process.send_after(self(), :tick, state.delay_ms)
-          {:noreply, %{state | timer_ref: timer_ref, in_flight: in_flight}}
+          {:noreply, %{state | timer_ref: timer_ref, in_flight: in_flight, idle_since: nil}}
 
         {:ok, executions} ->
           new_entries = Map.new(executions, fn e -> {e.id, now} end)
@@ -89,7 +100,9 @@ defmodule Throttle.QueueRunner do
 
           process_executions(executions)
           timer_ref = Process.send_after(self(), :tick, state.delay_ms)
-          {:noreply, %{state | timer_ref: timer_ref, in_flight: updated_in_flight}}
+
+          {:noreply,
+           %{state | timer_ref: timer_ref, in_flight: updated_in_flight, idle_since: nil}}
       end
     rescue
       e ->
