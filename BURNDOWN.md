@@ -47,7 +47,14 @@
 - [x] **P1-2** Async flush in ActionBatcher → Task.Supervisor.async_nolink (`903eace`)
 - [x] **P3-6** Custom telemetry events + Oban default logger (`257666d`)
 
-## Remaining (Future Sprints)
+## Sprint 3 — Harden & Clean Up (Complete)
 
-- [ ] **P3-2** ThrottleWorker decomposition (390 lines → modules)
-- [ ] **P3-7** Hardcoded secrets in dev/prod config — Move to env vars
+- [x] **P3-2** ThrottleWorker decomposition → HubSpotClient + ActionQueries + slim worker (`d3cc727`)
+- [x] **P3-7** Hardcoded secrets → env vars, added runtime.exs (`f0a205c`)
+- [x] **S3-3** Stale Oban `YourApp.Repo` config in dev/prod → Removed (`f0a205c`)
+- [x] **S3-4** prod.exs Logger `:warn` → `:warning` (`f0a205c`)
+- [x] **S3-5** PortalQueue `:timer.send_after` → `Process.send_after` (`c9eb461`)
+- [x] **S3-6** Missing `runtime.exs` for production releases (`f0a205c`)
+- [x] **S3-8** LiveView signing_salt placeholder → generated salt (`f0a205c`)
+
+## All Items Complete 🎉
