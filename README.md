@@ -21,11 +21,11 @@ ActionBatcher (GenServer)                         HubSpotClient (Finch)
 Repo.insert_all(action_executions)                PortalQueue (per-portal GenServer)
      │                                                        ▲
      ▼                                                        │
-Oban.insert(ThrottleWorker)  ──►  ThrottleWorker.perform/1 ──┘
-     (unique per queue_id)         fetch batch → dispatch to portal queues
+QueueRunner.ensure_started  ──►  QueueRunner :tick ───────────┘
+     (Registry lookup)            Process.send_after → fetch batch → dispatch
 ```
 
-Each portal+workflow+action combination gets a unique queue ID (`queue:{portal}:{workflow}:{action}:{index}`). The worker processes one batch per rate-limit interval, then either snoozes (short intervals) or schedules a new job (long intervals).
+Each portal+workflow+action combination gets a unique queue ID (`queue:{portal}:{workflow}:{action}:{index}`). A `QueueRunner` GenServer per queue drains actions at the configured rate using `Process.send_after` for precise BEAM-timer scheduling with zero DB overhead per tick. Runners stop themselves when the queue is drained and restart when new actions arrive.
 
 ## Quick Start
 
@@ -109,7 +109,10 @@ Throttle.Supervisor (one_for_one)
 ├── Throttle.ConfigCache             In-memory config with 5-min TTL
 ├── Throttle.OAuthRefreshLock        Per-portal mutex for token refreshes
 ├── Finch (Throttle.Finch)           HTTP connection pool (25 conns × 2 pools)
-├── Oban                             Background job processing
+├── Oban                             Cron jobs (JobCleaner, DataRetention)
+├── Throttle.QueueRunnerRegistry     Registry for per-queue rate-limit runners
+├── Throttle.QueueRunnerSupervisor   DynamicSupervisor (max 1000 children)
+│   └── Throttle.QueueRunner         One GenServer per active queue_id
 ├── Throttle.PortalRegistry          Registry for per-portal queue processes
 └── Throttle.PortalQueueSupervisor   DynamicSupervisor (max 500 children)
     └── Throttle.PortalQueue         One GenServer per active portal
@@ -119,15 +122,16 @@ Throttle.Supervisor (one_for_one)
 
 | Module | Role |
 |--------|------|
-| `ActionBatcher` | GenServer that buffers webhook payloads and batch-inserts them into `action_executions`. Adaptive flush interval (500ms–5s). Async flushes via Task.Supervisor. Flushes synchronously on shutdown to prevent data loss. |
-| `ThrottleWorker` | Oban worker. Fetches unprocessed actions for a queue, dispatches to per-portal queues, handles snooze/reschedule logic. |
+| `ActionBatcher` | GenServer that buffers webhook payloads and batch-inserts them into `action_executions`. Adaptive flush interval (500ms–5s). Async flushes via Task.Supervisor. Starts QueueRunners after successful inserts. |
+| `QueueRunner` | Per-queue GenServer that drains actions at the configured rate. Uses `Process.send_after` for precise tick timing (zero DB writes for scheduling). Stops when queue is drained, restarted by ActionBatcher when new actions arrive. |
+| `ThrottleWorker` | Thin Oban worker — starts a QueueRunner and exits. Only used by JobCleaner as a recovery mechanism. Also hosts `process_with_token/2` for HTTP callback handling. |
 | `HubSpotClient` | Finch-based HTTP client for the HubSpot callbacks API. Handles 429 rate limits, 403 blocks, retries. |
 | `ActionQueries` | Ecto queries for batch fetching, marking processed, tracking consecutive failures with hold-off. |
 | `PortalQueue` | Per-portal GenServer that batches HTTP calls (900ms flush, max 100). Fetches OAuth tokens and delegates to `HubSpotClient`. |
 | `ConfigCache` | GenServer cache with 5-minute TTL and `bust_cache/2` invalidation API. |
 | `OAuthManager` | Token storage, encryption (AES-256-GCM), refresh logic. |
 | `OAuthRefreshLock` | GenServer mutex — serializes token refreshes per portal to prevent race conditions. |
-| `JobCleaner` | Oban cron (every 5 min) — finds queues with unprocessed actions but no active job, re-schedules them. |
+| `JobCleaner` | Oban cron (every 5 min) — finds queues with unprocessed actions but no running QueueRunner, inserts a ThrottleWorker job to restart it. |
 | `DataRetentionWorker` | Oban cron (daily 3AM UTC) — prunes processed actions older than 30 days in batches of 1000. |
 
 ### Database Schema
