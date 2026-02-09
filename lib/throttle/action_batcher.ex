@@ -3,7 +3,7 @@ defmodule Throttle.ActionBatcher do
   require Logger
   alias Throttle.Repo
   alias Throttle.Schemas.ActionExecution
-  import Ecto.Query, only: [from: 2]
+  alias Throttle.QueueRunner
 
   @buffer_size 1000
   # 0.5 seconds
@@ -146,7 +146,7 @@ defmodule Throttle.ActionBatcher do
 
   defp process_queues(queues) do
     Enum.reduce(queues, {%{}, 0}, fn {queue_id, actions}, {acc_queues, total_flushed} ->
-      {inserted, remaining} = insert_batch_and_ensure_job(queue_id, actions)
+      {inserted, remaining} = insert_batch_and_ensure_runner(queue_id, actions)
       flushed_count = length(inserted)
 
       new_acc_queues =
@@ -156,8 +156,7 @@ defmodule Throttle.ActionBatcher do
     end)
   end
 
-  # P0-5: Wrap insert + job creation in a transaction to prevent orphaned actions
-  defp insert_batch_and_ensure_job(queue_id, actions) do
+  defp insert_batch_and_ensure_runner(queue_id, actions) do
     actions_to_insert = Enum.take(actions, @max_batch_size)
     prepared_actions = Enum.map(actions_to_insert, &prepare_action_for_insert/1)
 
@@ -168,11 +167,6 @@ defmodule Throttle.ActionBatcher do
                 ) do
              {inserted_count, inserted_actions} ->
                Logger.info("Inserted #{inserted_count} actions")
-
-               if inserted_count > 0 do
-                 ensure_job_exists(queue_id, hd(inserted_actions))
-               end
-
                {inserted_actions, Enum.drop(actions, inserted_count)}
 
              error ->
@@ -180,8 +174,20 @@ defmodule Throttle.ActionBatcher do
                Repo.rollback({:insert_failed, error})
            end
          end) do
-      {:ok, result} ->
-        result
+      {:ok, {inserted_actions, remaining}} ->
+        if inserted_actions != [] do
+          sample = hd(inserted_actions)
+
+          config = %{
+            max_throughput: sample.max_throughput,
+            time: sample.time,
+            period: sample.period
+          }
+
+          QueueRunner.ensure_started(queue_id, config)
+        end
+
+        {inserted_actions, remaining}
 
       {:error, reason} ->
         Logger.error("Transaction failed for queue #{queue_id}: #{inspect(reason)}")
@@ -196,53 +202,6 @@ defmodule Throttle.ActionBatcher do
     |> Map.take([:queue_id, :callback_id, :processed, :max_throughput, :time, :period])
     |> Map.put(:inserted_at, now)
     |> Map.put(:updated_at, now)
-  end
-
-  defp ensure_job_exists(queue_id, action) do
-    case get_existing_job(queue_id) do
-      nil ->
-        Logger.info("No existing job found for queue #{queue_id}, scheduling new job")
-        schedule_job(queue_id, action)
-
-      _job ->
-        Logger.info("Existing job found for queue #{queue_id}")
-        :ok
-    end
-  end
-
-  # TODO swap the queue_id to be a Key instead of an Arg
-  defp get_existing_job(queue_id) do
-    query =
-      from(j in Oban.Job,
-        where: fragment("?->>'queue_id' = ?", j.args, ^queue_id),
-        where: j.state in ["scheduled", "executing"],
-        order_by: [desc: j.scheduled_at],
-        limit: 1
-      )
-
-    Repo.one(query)
-  end
-
-  defp schedule_job(queue_id, action) do
-    job_params = %{
-      queue_id: queue_id,
-      max_throughput: action.max_throughput,
-      time: action.time,
-      period: action.period
-    }
-
-    changeset =
-      Throttle.ThrottleWorker.new(job_params)
-
-    case Oban.insert(changeset) do
-      {:ok, job} ->
-        Logger.info("Job scheduled successfully: #{inspect(job)}")
-        :ok
-
-      {:error, reason} ->
-        Logger.error("Failed to schedule job: #{inspect(reason)}")
-        :error
-    end
   end
 
   defp adjust_flush_interval(flushed_count, current_interval) do

@@ -28,6 +28,9 @@ defmodule Throttle.Application do
          "https://api.hubapi.com" => [size: 25, count: 2]
        }},
       {Oban, Application.get_env(:throttle, Oban)},
+      {Registry, keys: :unique, name: Throttle.QueueRunnerRegistry},
+      {DynamicSupervisor,
+       strategy: :one_for_one, name: Throttle.QueueRunnerSupervisor, max_children: 1000},
       {Registry, keys: :unique, name: Throttle.PortalRegistry},
       {DynamicSupervisor,
        strategy: :one_for_one, name: Throttle.PortalQueueSupervisor, max_children: 500}
