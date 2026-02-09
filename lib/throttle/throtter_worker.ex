@@ -2,15 +2,25 @@ defmodule Throttle.ThrottleWorker do
   use Oban.Worker,
     queue: :default,
     max_attempts: 3,
-    # Unique per worker, based only on the :queue_id key within args, for scheduled/available jobs.
-    unique: [fields: [:worker, :args], keys: [:queue_id], states: [:scheduled, :available], period: :infinity]
+    unique: [
+      fields: [:worker, :args],
+      keys: [:queue_id],
+      states: [:scheduled, :available],
+      period: :infinity
+    ]
+
   require Logger
   alias Throttle.Repo
   alias Throttle.Schemas.ActionExecution
   import Ecto.Query
 
-  # Store the initial configured max_attempts for the custom backoff calculation
   @initial_max_attempts 3
+  @http_recv_timeout 15_000
+  @http_connect_timeout 10_000
+  @max_snooze_attempts 20
+
+  @impl Oban.Worker
+  def timeout(_job), do: :timer.seconds(60)
 
   @impl Oban.Worker
   def backoff(%Oban.Job{} = job) do
@@ -47,32 +57,50 @@ defmodule Throttle.ThrottleWorker do
               :ok ->
                 # Successfully processed a batch. Decide how to proceed.
                 handle_successful_batch(job, queue_id, max_throughput, time_str, period)
+
               {:ok, :ok} ->
                 handle_successful_batch(job, queue_id, max_throughput, time_str, period)
+
               {:error, reason} ->
-                Logger.error("Error processing executions for queue #{queue_id}: #{inspect(reason)}")
+                Logger.error(
+                  "Error processing executions for queue #{queue_id}: #{inspect(reason)}"
+                )
+
                 # Let Oban handle retry based on standard :error tuple
                 {:error, reason}
             end
 
           {:error, reason} ->
             Logger.error("Error fetching batch for queue #{queue_id}: #{inspect(reason)}")
-            {:error, reason} # Let Oban handle retry
+            # Let Oban handle retry
+            {:error, reason}
         end
       rescue
         e ->
           stacktrace = __STACKTRACE__
-          Logger.error("Unexpected error processing queue #{queue_id}: #{inspect(e)}\nStacktrace: #{inspect(stacktrace)}")
-          {:error, :unexpected_error} # Let Oban handle retry
+
+          Logger.error(
+            "Unexpected error processing queue #{queue_id}: #{inspect(e)}\nStacktrace: #{inspect(stacktrace)}"
+          )
+
+          # Let Oban handle retry
+          {:error, :unexpected_error}
       end
 
     Logger.info("Job for queue #{queue_id} finishing with result: #{inspect(result)}")
-    result # Return :ok, {:error, ...}, or {:snooze, ...}
+    # Return :ok, {:error, ...}, or {:snooze, ...}
+    result
   end
 
   # Helper to normalize args map keys to atoms
   defp normalize_args(%{queue_id: _} = args), do: args
-  defp normalize_args(%{"queue_id" => queue_id, "max_throughput" => max_throughput, "time" => time, "period" => period}) do
+
+  defp normalize_args(%{
+         "queue_id" => queue_id,
+         "max_throughput" => max_throughput,
+         "time" => time,
+         "period" => period
+       }) do
     %{
       queue_id: queue_id,
       max_throughput: max_throughput,
@@ -90,34 +118,35 @@ defmodule Throttle.ThrottleWorker do
     else
       # For longer intervals, schedule a new job like before
       schedule_next_job(queue_id, max_throughput, time_str, period)
-      :ok # Return :ok because scheduling the next job was successful for this one.
+      # Return :ok because scheduling the next job was successful for this one.
+      :ok
     end
   end
 
   defp check_active_and_snooze_or_complete(job, queue_id, max_throughput, time_str, period, delay) do
-    if job.attempt >= 100 do
-      # Use Logger.warning instead of deprecated Logger.warn
+    if job.attempt >= @max_snooze_attempts do
       Logger.warning(
-        "Job for queue #{queue_id} reached attempt limit (#{job.attempt}). Scheduling new job instead of snoozing."
+        "Job for queue #{queue_id} reached snooze limit (#{job.attempt}). Scheduling new job."
       )
+
       schedule_next_job(queue_id, max_throughput, time_str, period)
       :ok
     else
-      # Attempt limit not reached, proceed with snooze check
-      case queue_active?(queue_id) do
-        {:ok, true} ->
-          # Queue still has items, snooze to run again
-          Logger.debug("Queue #{queue_id} still active (attempt #{job.attempt + 1}), snoozing for #{delay} seconds.")
-          {:snooze, delay}
-        {:ok, false} ->
-          # Queue appears empty *now*. Let the job finish.
-          # JobCleaner or ActionBatcher will restart it if needed later.
-          Logger.debug("Queue #{queue_id} now inactive/empty (attempt #{job.attempt}), completing job after snooze-eligible interval.")
-          :ok
-        {:error, reason} ->
-           # Error checking status, better to let Oban retry the whole job.
-           Logger.error("Error checking queue status after processing for #{queue_id} (attempt #{job.attempt}): #{inspect(reason)}")
-           {:error, {:queue_check_failed, reason}}
+      # P1-7: Only check DB every 5th snooze to reduce query load
+      if rem(job.attempt, 5) == 0 do
+        case queue_active?(queue_id) do
+          {:ok, true} ->
+            {:snooze, delay}
+
+          {:ok, false} ->
+            :ok
+
+          {:error, reason} ->
+            Logger.error("Error checking queue status for #{queue_id}: #{inspect(reason)}")
+            {:error, {:queue_check_failed, reason}}
+        end
+      else
+        {:snooze, delay}
       end
     end
   end
@@ -125,38 +154,43 @@ defmodule Throttle.ThrottleWorker do
   defp queue_active?(queue_id) do
     Logger.debug("Checking if queue #{queue_id} is active")
 
-    query = from(a in ActionExecution,
-                  where: a.queue_id == ^queue_id,
-                  where: not a.processed,
-                  order_by: [desc: a.inserted_at],
-                  select: a.inserted_at,
-                  limit: 1)
+    query =
+      from(a in ActionExecution,
+        where: a.queue_id == ^queue_id,
+        where: not a.processed,
+        order_by: [desc: a.inserted_at],
+        select: a.inserted_at,
+        limit: 1
+      )
 
     case Repo.one(query) do
       nil ->
         Logger.debug("No active executions found for queue #{queue_id}")
         {:ok, false}
+
       _ ->
         Logger.debug("Active executions found for queue #{queue_id}")
         {:ok, true}
     end
   end
 
-
   defp get_next_action_batch(queue_id, max_throughput) do
     throughput = String.to_integer(max_throughput)
     now = DateTime.utc_now()
 
-    query = from(a in ActionExecution,
-                 where: a.queue_id == ^queue_id and not a.processed,
-                 where: is_nil(a.on_hold_until) or a.on_hold_until <= ^now,
-                 order_by: [asc: a.inserted_at],
-                 limit: ^throughput)
+    query =
+      from(a in ActionExecution,
+        where: a.queue_id == ^queue_id and not a.processed,
+        where: is_nil(a.on_hold_until) or a.on_hold_until <= ^now,
+        order_by: [asc: a.inserted_at],
+        limit: ^throughput
+      )
 
     case Repo.all(query) do
       [] ->
         Logger.debug("No executions found for queue #{queue_id}")
         {:ok, []}
+
       executions ->
         Logger.debug("Found #{length(executions)} executions to process")
         {:ok, executions}
@@ -170,12 +204,14 @@ defmodule Throttle.ThrottleWorker do
 
   defp process_executions(executions) do
     executions_by_portal = Enum.group_by(executions, &extract_portal_id/1)
+
     Enum.each(executions_by_portal, fn {portal_id, portal_executions} ->
       # Start the portal queue if not already started
       start_portal_queue(portal_id)
       # Enqueue executions into the portal queue
       Throttle.PortalQueue.enqueue_executions(portal_id, portal_executions)
     end)
+
     :ok
   end
 
@@ -183,14 +219,20 @@ defmodule Throttle.ThrottleWorker do
     case Registry.lookup(Throttle.PortalRegistry, portal_id) do
       [] ->
         # Start the GenServer for the portal
-        DynamicSupervisor.start_child(Throttle.PortalQueueSupervisor, {Throttle.PortalQueue, portal_id})
+        DynamicSupervisor.start_child(
+          Throttle.PortalQueueSupervisor,
+          {Throttle.PortalQueue, portal_id}
+        )
+
       _ ->
         :ok
     end
   end
 
-  @max_consecutive_failures 3 # Put actions on hold after this many consecutive failures
-  @hold_duration_seconds 1800 # Hold for 30 minutes (1800 seconds)
+  # Put actions on hold after this many consecutive failures
+  @max_consecutive_failures 3
+  # Hold for 30 minutes (1800 seconds)
+  @hold_duration_seconds 1800
 
   def process_with_token(executions, token) do
     Logger.info("Processing with token for portal: #{token.portal_id}")
@@ -199,7 +241,9 @@ defmodule Throttle.ThrottleWorker do
     action_ids = Enum.map(unique_executions, & &1.id)
 
     if length(unique_executions) < length(executions) do
-      Logger.warning("Filtered out #{length(executions) - length(unique_executions)} duplicate callback IDs")
+      Logger.warning(
+        "Filtered out #{length(executions) - length(unique_executions)} duplicate callback IDs"
+      )
     end
 
     case send_batch_complete_with_retry(unique_executions, token.access_token) do
@@ -211,43 +255,58 @@ defmodule Throttle.ThrottleWorker do
 
       {:error, {:http_error, 403, _body}} ->
         # Handle 403 specifically: Increment failure count, potentially put on hold
-        Logger.error("Batch failed with 403 Forbidden for actions: #{inspect(action_ids)}. Incrementing failure count.")
+        Logger.error(
+          "Batch failed with 403 Forbidden for actions: #{inspect(action_ids)}. Incrementing failure count."
+        )
+
         handle_batch_failure(action_ids, "forbidden")
-        {:error, :forbidden} # Return specific error
+        # Return specific error
+        {:error, :forbidden}
 
       {:error, {:rate_limited, retry_after}} ->
         # Rate limited: Don't change error state, will be retried by Oban or next run
-        Logger.warning("Batch rate limited (429) for actions: #{inspect(action_ids)}. Will retry later.")
+        Logger.warning(
+          "Batch rate limited (429) for actions: #{inspect(action_ids)}. Will retry later."
+        )
+
         {:error, {:rate_limited, retry_after}}
 
       error ->
         # Other errors: Increment failure count, potentially put on hold
-        Logger.error("Error sending batch complete for actions: #{inspect(action_ids)}. Error: #{inspect(error)}. Incrementing failure count.")
+        Logger.error(
+          "Error sending batch complete for actions: #{inspect(action_ids)}. Error: #{inspect(error)}. Incrementing failure count."
+        )
+
         handle_batch_failure(action_ids, "other_error")
-        error # Return original error
+        # Return original error
+        error
     end
   end
 
   defp send_batch_complete_with_retry(executions, access_token, retries \\ 3) do
     case send_batch_complete(executions, access_token) do
-      :ok -> :ok
+      :ok ->
+        :ok
+
       {:error, {:rate_limited, retry_after}} when retries > 0 ->
         Logger.warning(fn ->
-          "Rate limited by HubSpot API, retrying in #{retry_after} seconds (#{retries} retries left)"
+          "Rate limited by HubSpot API, will snooze for #{retry_after}s (#{retries} retries left)"
         end)
-        :timer.sleep(retry_after * 1000)
-        send_batch_complete_with_retry(executions, access_token, retries - 1)
+
+        {:error, {:rate_limited, retry_after}}
+
       {:error, reason} when retries > 0 ->
         Logger.warning(fn ->
           "Error occurred: #{inspect(reason)}, retrying (#{retries} retries left)"
         end)
-        :timer.sleep(2000)
+
+        Process.sleep(2000)
         send_batch_complete_with_retry(executions, access_token, retries - 1)
+
       {:error, reason} ->
         {:error, reason}
     end
   end
-
 
   defp extract_portal_id(execution) do
     execution.queue_id |> String.split(":") |> Enum.at(1) |> String.to_integer()
@@ -257,21 +316,26 @@ defmodule Throttle.ThrottleWorker do
     Logger.info(fn -> "Sending batch complete for #{length(executions)} executions" end)
     url = "https://api.hubapi.com/automation/v4/actions/callbacks/complete"
 
-    body = Jason.encode!(%{
-      inputs: Enum.map(executions, fn execution ->
-        %{
-          callbackId: execution.callback_id,
-          outputFields: %{hs_execution_state: "SUCCESS"}
-        }
-      end)
-    })
+    body =
+      Jason.encode!(%{
+        inputs:
+          Enum.map(executions, fn execution ->
+            %{
+              callbackId: execution.callback_id,
+              outputFields: %{hs_execution_state: "SUCCESS"}
+            }
+          end)
+      })
 
     headers = [
       {"Authorization", "Bearer #{access_token}"},
       {"Content-Type", "application/json"}
     ]
 
-    case HTTPoison.post(url, body, headers) do
+    case HTTPoison.post(url, body, headers,
+           recv_timeout: @http_recv_timeout,
+           connect_timeout: @http_connect_timeout
+         ) do
       {:ok, %{status_code: 204}} ->
         Logger.debug("Batch complete request successful")
         :ok
@@ -280,7 +344,8 @@ defmodule Throttle.ThrottleWorker do
         # Handle Cloudflare/other 403 block specifically
         ray_id = extract_cloudflare_ray_id(response_body)
         Logger.error("API request blocked (403 Forbidden). Ray ID: #{ray_id || "Not Found"}.")
-        {:error, {:http_error, 403, response_body}} # Return error without crashing
+        # Return error without crashing
+        {:error, {:http_error, 403, response_body}}
 
       {:ok, %{status_code: 429, headers: response_headers}} ->
         retry_after = extract_retry_after(response_headers) || 60
@@ -291,16 +356,24 @@ defmodule Throttle.ThrottleWorker do
         # Attempt to parse other errors as JSON, but handle potential decode errors
         case Jason.decode(response.body) do
           {:ok, parsed_body} ->
-            Logger.error("API error: Status #{response.status_code}, Body: #{inspect(parsed_body)}")
+            Logger.error(
+              "API error: Status #{response.status_code}, Body: #{inspect(parsed_body)}"
+            )
+
             {:error, {:api_error, response.status_code, parsed_body}}
+
           {:error, decode_error} ->
-             Logger.error("API error: Status #{response.status_code}, Failed to decode JSON body: #{inspect(decode_error)}, Body: #{inspect(response.body)}")
-             {:error, {:http_error, response.status_code, response.body}}
+            Logger.error(
+              "API error: Status #{response.status_code}, Failed to decode JSON body: #{inspect(decode_error)}, Body: #{inspect(response.body)}"
+            )
+
+            {:error, {:http_error, response.status_code, response.body}}
         end
 
       {:error, error} ->
         Logger.error("HTTP error: #{inspect(error.reason)}")
-        {:error, {:http_error, error.reason}} # Note: a bit inconsistent, maybe {:http_client_error, reason}?
+        # Note: a bit inconsistent, maybe {:http_client_error, reason}?
+        {:error, {:http_error, error.reason}}
     end
   end
 
@@ -311,22 +384,27 @@ defmodule Throttle.ThrottleWorker do
       _ -> nil
     end
   end
+
   defp extract_cloudflare_ray_id(_), do: nil
 
   # New function to mark processed AND clear error state
   defp mark_actions_processed_and_clear_errors(action_ids) do
-    {_count, _} = from(a in ActionExecution, where: a.id in ^action_ids)
-    |> Repo.update_all(set: [
-      processed: true,
-      last_failure_reason: nil,
-      consecutive_failures: 0,
-      on_hold_until: nil
-    ])
+    {_count, _} =
+      from(a in ActionExecution, where: a.id in ^action_ids)
+      |> Repo.update_all(
+        set: [
+          processed: true,
+          last_failure_reason: nil,
+          consecutive_failures: 0,
+          on_hold_until: nil
+        ]
+      )
   end
 
   # New function to handle batch failure updates
   defp handle_batch_failure(action_ids, reason) do
     now = DateTime.utc_now()
+
     # We need to update based on the current state in the DB, which requires a more complex update.
     # Easiest way is often to fetch, update, and save, but that's inefficient for batches.
     # Using update_all with a CASE statement or fragment is possible but complex.
@@ -342,37 +420,50 @@ defmodule Throttle.ThrottleWorker do
 
     # Check which actions have exceeded the failure threshold and put them on hold
     hold_until = DateTime.add(now, @hold_duration_seconds, :second)
+
     Repo.update_all(
-      from(a in ActionExecution, where: a.id in ^action_ids and a.consecutive_failures >= @max_consecutive_failures),
+      from(a in ActionExecution,
+        where: a.id in ^action_ids and a.consecutive_failures >= @max_consecutive_failures
+      ),
       set: [on_hold_until: hold_until]
     )
   end
 
-
   defp schedule_next_job(queue_id, max_throughput, time, period) do
-      delay = calculate_delay(time, period)
-      Logger.debug(
-        "ThrottleWorker: Scheduling next job for queue #{queue_id} with delay: #{delay} seconds"
-      )
+    delay = calculate_delay(time, period)
 
-      # Use atom keys for args to match unique keys config
-      job_params = %{
-        queue_id: queue_id,
-        max_throughput: to_string(max_throughput), # Ensure these are strings if perform expects strings
-        time: to_string(time),
-        period: period
-      }
+    Logger.debug(
+      "ThrottleWorker: Scheduling next job for queue #{queue_id} with delay: #{delay} seconds"
+    )
 
-      Oban.insert(new(job_params, schedule_in: delay))
-    end
+    # Use atom keys for args to match unique keys config
+    job_params = %{
+      queue_id: queue_id,
+      # Ensure these are strings if perform expects strings
+      max_throughput: to_string(max_throughput),
+      time: to_string(time),
+      period: period
+    }
+
+    Oban.insert(new(job_params, schedule_in: delay))
+  end
 
   defp calculate_delay(time, period) do
     time = String.to_integer(time)
+
     case period do
-      "seconds" -> time
-      "minutes" -> time * 60
-      "hours" -> time * 3600
-      "days" -> time * 86400
+      "seconds" ->
+        time
+
+      "minutes" ->
+        time * 60
+
+      "hours" ->
+        time * 3600
+
+      "days" ->
+        time * 86400
+
       _ ->
         Logger.warning("ThrottleWorker: Invalid period #{period}, defaulting to seconds")
         time
