@@ -89,15 +89,9 @@ defmodule Throttle.OAuthManager do
         if token_expired?(decrypted_token) or token_expiring_soon?(decrypted_token) do
           Logger.info("Token expired or expiring soon for portal: #{portal_id}, refreshing")
 
-          case refresh_token(decrypted_token) do
-            {:ok, refreshed_token} ->
-              Logger.info("Token refreshed successfully for portal: #{portal_id}")
-              {:ok, refreshed_token}
-
-            {:error, _reason} = error ->
-              Logger.error("Failed to refresh token for portal: #{portal_id}")
-              error
-          end
+          Throttle.OAuthRefreshLock.refresh_if_needed(portal_id, fn ->
+            refresh_token(decrypted_token)
+          end)
         else
           Logger.info("Token valid for portal: #{portal_id}")
           {:ok, decrypted_token}
