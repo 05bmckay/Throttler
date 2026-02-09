@@ -10,9 +10,8 @@ defmodule Throttle.ThrottleWorker do
     ]
 
   require Logger
-  alias Throttle.Repo
-  alias Throttle.Schemas.ActionExecution
-  import Ecto.Query
+  alias Throttle.ActionQueries
+  alias Throttle.HubSpotClient
 
   @initial_max_attempts 3
   @max_snooze_attempts 20
@@ -43,7 +42,7 @@ defmodule Throttle.ThrottleWorker do
     result =
       try do
         # No need to check if active here, get_next_action_batch handles empty queues.
-        case get_next_action_batch(queue_id, max_throughput) do
+        case ActionQueries.get_next_action_batch(queue_id, max_throughput) do
           {:ok, []} ->
             # Queue is empty, no work done. Let the job complete normally.
             # It will be restarted later by JobCleaner or ActionBatcher if new items arrive.
@@ -132,7 +131,7 @@ defmodule Throttle.ThrottleWorker do
     else
       # P1-7: Only check DB every 5th snooze to reduce query load
       if rem(job.attempt, 5) == 0 do
-        case queue_active?(queue_id) do
+        case ActionQueries.queue_active?(queue_id) do
           {:ok, true} ->
             {:snooze, delay}
 
@@ -146,52 +145,6 @@ defmodule Throttle.ThrottleWorker do
       else
         {:snooze, delay}
       end
-    end
-  end
-
-  defp queue_active?(queue_id) do
-    Logger.debug("Checking if queue #{queue_id} is active")
-
-    query =
-      from(a in ActionExecution,
-        where: a.queue_id == ^queue_id,
-        where: not a.processed,
-        order_by: [desc: a.inserted_at],
-        select: a.inserted_at,
-        limit: 1
-      )
-
-    case Repo.one(query) do
-      nil ->
-        Logger.debug("No active executions found for queue #{queue_id}")
-        {:ok, false}
-
-      _ ->
-        Logger.debug("Active executions found for queue #{queue_id}")
-        {:ok, true}
-    end
-  end
-
-  defp get_next_action_batch(queue_id, max_throughput) do
-    throughput = String.to_integer(max_throughput)
-    now = DateTime.utc_now()
-
-    query =
-      from(a in ActionExecution,
-        where: a.queue_id == ^queue_id and not a.processed,
-        where: is_nil(a.on_hold_until) or a.on_hold_until <= ^now,
-        order_by: [asc: a.inserted_at],
-        limit: ^throughput
-      )
-
-    case Repo.all(query) do
-      [] ->
-        Logger.debug("No executions found for queue #{queue_id}")
-        {:ok, []}
-
-      executions ->
-        Logger.debug("Found #{length(executions)} executions to process")
-        {:ok, executions}
     end
   end
 
@@ -227,11 +180,6 @@ defmodule Throttle.ThrottleWorker do
     end
   end
 
-  # Put actions on hold after this many consecutive failures
-  @max_consecutive_failures 3
-  # Hold for 30 minutes (1800 seconds)
-  @hold_duration_seconds 1800
-
   def process_with_token(executions, token) do
     Logger.info("Processing with token for portal: #{token.portal_id}")
 
@@ -244,11 +192,11 @@ defmodule Throttle.ThrottleWorker do
       )
     end
 
-    case send_batch_complete_with_retry(unique_executions, token.access_token) do
+    case HubSpotClient.send_batch_complete_with_retry(unique_executions, token.access_token) do
       :ok ->
         # Success: Mark processed and clear error fields
         Logger.info("Batch complete sent successfully for actions: #{inspect(action_ids)}")
-        mark_actions_processed_and_clear_errors(action_ids)
+        ActionQueries.mark_actions_processed_and_clear_errors(action_ids)
 
         # Emit telemetry event for successful action processing
         :telemetry.execute(
@@ -265,7 +213,7 @@ defmodule Throttle.ThrottleWorker do
           "Batch failed with 403 Forbidden for actions: #{inspect(action_ids)}. Incrementing failure count."
         )
 
-        handle_batch_failure(action_ids, "forbidden")
+        ActionQueries.handle_batch_failure(action_ids, "forbidden")
         # Return specific error
         {:error, :forbidden}
 
@@ -283,154 +231,14 @@ defmodule Throttle.ThrottleWorker do
           "Error sending batch complete for actions: #{inspect(action_ids)}. Error: #{inspect(error)}. Incrementing failure count."
         )
 
-        handle_batch_failure(action_ids, "other_error")
+        ActionQueries.handle_batch_failure(action_ids, "other_error")
         # Return original error
         error
     end
   end
 
-  defp send_batch_complete_with_retry(executions, access_token, retries \\ 3) do
-    case send_batch_complete(executions, access_token) do
-      :ok ->
-        :ok
-
-      {:error, {:rate_limited, retry_after}} when retries > 0 ->
-        Logger.warning(fn ->
-          "Rate limited by HubSpot API, will snooze for #{retry_after}s (#{retries} retries left)"
-        end)
-
-        {:error, {:rate_limited, retry_after}}
-
-      {:error, reason} when retries > 0 ->
-        Logger.warning(fn ->
-          "Error occurred: #{inspect(reason)}, retrying (#{retries} retries left)"
-        end)
-
-        Process.sleep(2000)
-        send_batch_complete_with_retry(executions, access_token, retries - 1)
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
   defp extract_portal_id(execution) do
     execution.queue_id |> String.split(":") |> Enum.at(1) |> String.to_integer()
-  end
-
-  defp send_batch_complete(executions, access_token) do
-    Logger.info(fn -> "Sending batch complete for #{length(executions)} executions" end)
-    url = "https://api.hubapi.com/automation/v4/actions/callbacks/complete"
-
-    body =
-      Jason.encode!(%{
-        inputs:
-          Enum.map(executions, fn execution ->
-            %{
-              callbackId: execution.callback_id,
-              outputFields: %{hs_execution_state: "SUCCESS"}
-            }
-          end)
-      })
-
-    headers = [
-      {"Authorization", "Bearer #{access_token}"},
-      {"Content-Type", "application/json"}
-    ]
-
-    request = Finch.build(:post, url, headers, body)
-
-    case Finch.request(request, Throttle.Finch, receive_timeout: 15_000, request_timeout: 30_000) do
-      {:ok, %Finch.Response{status: 204}} ->
-        Logger.debug("Batch complete request successful")
-        :ok
-
-      {:ok, %Finch.Response{status: 403, body: response_body}} ->
-        # Handle Cloudflare/other 403 block specifically
-        ray_id = extract_cloudflare_ray_id(response_body)
-        Logger.error("API request blocked (403 Forbidden). Ray ID: #{ray_id || "Not Found"}.")
-        # Return error without crashing
-        {:error, {:http_error, 403, response_body}}
-
-      {:ok, %Finch.Response{status: 429, headers: response_headers}} ->
-        retry_after = extract_retry_after(response_headers) || 60
-        Logger.warning("Rate limited by HubSpot API (429), retry after #{retry_after} seconds")
-
-        # Emit telemetry event for rate limiting
-        :telemetry.execute(
-          [:throttle, :api, :rate_limited],
-          %{retry_after: retry_after},
-          %{}
-        )
-
-        {:error, {:rate_limited, retry_after}}
-
-      {:ok, %Finch.Response{status: status, body: response_body}} ->
-        # Attempt to parse other errors as JSON, but handle potential decode errors
-        case Jason.decode(response_body) do
-          {:ok, parsed_body} ->
-            Logger.error("API error: Status #{status}, Body: #{inspect(parsed_body)}")
-
-            {:error, {:api_error, status, parsed_body}}
-
-          {:error, decode_error} ->
-            Logger.error(
-              "API error: Status #{status}, Failed to decode JSON body: #{inspect(decode_error)}, Body: #{inspect(response_body)}"
-            )
-
-            {:error, {:http_error, status, response_body}}
-        end
-
-      {:error, exception} ->
-        Logger.error("HTTP error: #{Exception.message(exception)}")
-        {:error, {:http_error, Exception.message(exception)}}
-    end
-  end
-
-  # Add a helper function to extract Ray ID (simple regex approach)
-  defp extract_cloudflare_ray_id(body) when is_binary(body) do
-    case Regex.run(~r/Cloudflare Ray ID: <strong[^>]*>([a-f0-9]+)<\/strong>/i, body) do
-      [_, ray_id] -> ray_id
-      _ -> nil
-    end
-  end
-
-  defp extract_cloudflare_ray_id(_), do: nil
-
-  # New function to mark processed AND clear error state
-  defp mark_actions_processed_and_clear_errors(action_ids) do
-    {_count, _} =
-      from(a in ActionExecution, where: a.id in ^action_ids)
-      |> Repo.update_all(
-        set: [
-          processed: true,
-          last_failure_reason: nil,
-          consecutive_failures: 0,
-          on_hold_until: nil
-        ]
-      )
-  end
-
-  defp handle_batch_failure(action_ids, reason) do
-    hold_until = DateTime.add(DateTime.utc_now(), @hold_duration_seconds, :second)
-    threshold = @max_consecutive_failures
-
-    from(a in ActionExecution,
-      where: a.id in ^action_ids,
-      update: [
-        set: [
-          consecutive_failures: fragment("consecutive_failures + 1"),
-          last_failure_reason: ^reason,
-          on_hold_until:
-            fragment(
-              "CASE WHEN consecutive_failures + 1 >= ? THEN ? ELSE on_hold_until END",
-              ^threshold,
-              ^hold_until
-            )
-        ]
-      ]
-    )
-    |> Repo.update_all([])
   end
 
   defp schedule_next_job(queue_id, max_throughput, time, period) do
@@ -472,13 +280,5 @@ defmodule Throttle.ThrottleWorker do
         Logger.warning("ThrottleWorker: Invalid period #{period}, defaulting to seconds")
         time
     end
-  end
-
-  defp extract_retry_after(headers) do
-    headers
-    |> Enum.find_value(fn
-      {"Retry-After", value} -> String.to_integer(value)
-      _ -> nil
-    end)
   end
 end
