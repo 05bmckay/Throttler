@@ -11,7 +11,7 @@ secret_key_base =
 config :throttle, Throttle.Repo,
   url: System.get_env("DATABASE_URL"),
   show_sensitive_data_on_connection_error: true,
-  pool_size: String.to_integer(System.get_env("POOL_SIZE") || "20"),
+  pool_size: min(String.to_integer(System.get_env("POOL_SIZE") || "20"), 20),
   ssl: true,
   ssl_opts: [
     verify: :verify_none

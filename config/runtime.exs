@@ -7,13 +7,21 @@ if config_env() == :prod do
       _ -> raise "THROTTLE_RECOVERY_QUEUES_PER_RUN must be a positive integer"
     end
 
+  requested_pool_size =
+    case Integer.parse(System.get_env("POOL_SIZE") || "20") do
+      {value, ""} when value > 0 -> value
+      _ -> raise "POOL_SIZE must be a positive integer"
+    end
+
+  pool_size = min(requested_pool_size, 20)
+
   database_url =
     System.get_env("DATABASE_URL") ||
       raise "DATABASE_URL environment variable is not set"
 
   config :throttle, Throttle.Repo,
     url: database_url,
-    pool_size: String.to_integer(System.get_env("POOL_SIZE") || "20"),
+    pool_size: pool_size,
     ssl: true,
     ssl_opts: [verify: :verify_none]
 
