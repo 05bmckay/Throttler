@@ -1,6 +1,10 @@
 defmodule Throttle.Workers.JobCleaner do
   @moduledoc """
-  Periodically scans for unprocessed actions and ensures an Oban worker job exists for each queue.
+  Periodically scans for runnable actions and gradually restores missing QueueRunners.
+
+  ThrottleWorker jobs are short-lived bootstrap jobs: they start a QueueRunner and
+  then complete. Treating the absence of an active Oban job as a missing queue is
+  therefore incorrect after the QueueRunner refactor.
   """
   use Oban.Worker, queue: :maintenance, max_attempts: 3
 
@@ -9,90 +13,87 @@ defmodule Throttle.Workers.JobCleaner do
 
   alias Throttle.Repo
   alias Throttle.Schemas.ActionExecution
-  alias Oban.Job
 
   # Run every 5 minutes
   @impl Oban.Worker
   def perform(%Oban.Job{}) do
     Logger.info("Running JobCleaner...")
 
-    unprocessed_queue_ids = fetch_unprocessed_queue_ids()
-    active_job_queue_ids = fetch_active_job_queue_ids()
+    runnable_queues =
+      fetch_runnable_queues()
+      |> Enum.reject(&runner_active?(&1.queue_id))
+      |> Enum.sort_by(&estimated_drain_seconds/1)
+      |> Enum.take(recovery_queues_per_run())
 
-    missing_queue_ids = MapSet.difference(unprocessed_queue_ids, active_job_queue_ids)
-                      |> MapSet.to_list()
+    results =
+      Enum.map(runnable_queues, fn config ->
+        case Throttle.QueueRunner.ensure_started(config.queue_id, config) do
+          {:ok, _pid} ->
+            :ok
 
-    if Enum.empty?(missing_queue_ids) do
-      Logger.info("JobCleaner found no missing jobs.")
+          {:error, reason} ->
+            Logger.error(
+              "JobCleaner failed to start runner for #{config.queue_id}: #{inspect(reason)}"
+            )
+
+            {:error, {config.queue_id, reason}}
+        end
+      end)
+
+    failures = Enum.filter(results, &match?({:error, _}, &1))
+
+    if failures == [] do
+      Logger.info(
+        "JobCleaner started #{length(runnable_queues)} missing queue runners (limit #{recovery_queues_per_run()} per run)."
+      )
+
       :ok
     else
-      Logger.info("JobCleaner found #{Enum.count(missing_queue_ids)} queues possibly missing jobs: #{inspect(missing_queue_ids)}")
-      schedule_missing_jobs(missing_queue_ids)
+      {:error, {:runner_start_failures, failures}}
     end
   end
 
-  defp fetch_unprocessed_queue_ids do
-    query = from(ae in ActionExecution,
-      where: ae.processed == false,
-      select: ae.queue_id,
-      distinct: true
-    )
-    Repo.all(query) |> MapSet.new()
-  end
+  defp fetch_runnable_queues do
+    now = DateTime.utc_now()
 
-  defp fetch_active_job_queue_ids do
-    # States considered active: available, scheduled, executing
-    # Note: Oban Pro adds `retrying` and `pending`, which could also be included.
-    active_states = ["available", "scheduled", "executing"]
-
-    query = from(j in Job,
-      where: j.worker == ^to_string(Throttle.ThrottleWorker) and j.state in ^active_states,
-      select: fragment("?->>'queue_id'", j.args),
-      distinct: true
-    )
+    query =
+      from(ae in ActionExecution,
+        where: not ae.processed and not ae.permanently_failed,
+        where: is_nil(ae.on_hold_until) or ae.on_hold_until <= ^now,
+        group_by: [ae.queue_id, ae.max_throughput, ae.time, ae.period],
+        select: %{
+          queue_id: ae.queue_id,
+          max_throughput: ae.max_throughput,
+          time: ae.time,
+          period: ae.period,
+          backlog_size: count(ae.id)
+        }
+      )
 
     Repo.all(query)
-    |> Enum.reject(&is_nil(&1)) # Filter out potential nil if args didn't have queue_id
-    |> MapSet.new()
   end
 
-  defp schedule_missing_jobs(queue_ids) do
-    # Fetch one sample unprocessed action for each missing queue_id to get args
-    # Using a subquery to get one distinct action per queue_id
-    sub_query = from(ae in ActionExecution,
-      where: ae.processed == false and ae.queue_id in ^queue_ids,
-      distinct: ae.queue_id,
-      select: %{
-        queue_id: ae.queue_id,
-        max_throughput: ae.max_throughput,
-        time: ae.time,
-        period: ae.period
-      }
-      # The distinct clause might not guarantee *which* action is picked if multiple
-      # unprocessed actions exist for the same queue_id, but we assume the args
-      # (max_throughput, time, period) are consistent per queue_id.
-    )
-
-    sample_actions = Repo.all(sub_query)
-
-    Enum.each(sample_actions, fn action_args ->
-      changeset = Throttle.ThrottleWorker.new(action_args)
-
-      # Insert the job. The unique index handles conflicts if a job was
-      # created between our check and this insert attempt.
-      case Oban.insert(changeset, on_conflict: :nothing) do
-        {:ok, job} ->
-          Logger.info("JobCleaner scheduled missing job for queue #{action_args.queue_id}: #{inspect(job.id)}")
-        {:error, _changeset_or_tuple} ->
-          # This could be a conflict (which is OK and expected sometimes)
-          # or a different error (which should be logged).
-          # Oban.insert/2 returns {:error, changeset} on validation errors, or
-          # {:error, {:conflict, message}} on conflicts with on_conflict: :nothing.
-          # Log if it wasn't just a conflict (though conflict is hard to distinguish here reliably).
-          Logger.warning("JobCleaner failed to insert job for queue #{action_args.queue_id} (possibly due to conflict or other error)")
-      end
-    end)
-
-    :ok
+  defp runner_active?(queue_id) do
+    Registry.lookup(Throttle.QueueRunnerRegistry, queue_id) != []
   end
+
+  defp recovery_queues_per_run do
+    Application.get_env(:throttle, :recovery_queues_per_run, 1)
+  end
+
+  defp estimated_drain_seconds(config) do
+    with {throughput, ""} when throughput > 0 <- Integer.parse(to_string(config.max_throughput)),
+         {time, ""} when time > 0 <- Integer.parse(to_string(config.time)),
+         period_seconds when is_integer(period_seconds) <- period_seconds(config.period) do
+      config.backlog_size * time * period_seconds / throughput
+    else
+      _ -> :infinity
+    end
+  end
+
+  defp period_seconds("seconds"), do: 1
+  defp period_seconds("minutes"), do: 60
+  defp period_seconds("hours"), do: 3_600
+  defp period_seconds("days"), do: 86_400
+  defp period_seconds(_), do: nil
 end

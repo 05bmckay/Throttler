@@ -18,6 +18,7 @@ defmodule ThrottleWeb.Router do
   scope "/api", ThrottleWeb do
     pipe_through(:api)
 
+    get("/health", HealthController, :show)
     post("/config", ThrottleConfigController, :create)
     get("/config/:portal_id/:action_id", ThrottleConfigController, :show)
 

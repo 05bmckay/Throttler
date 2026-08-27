@@ -78,6 +78,19 @@ defmodule Throttle.ActionQueries do
       )
   end
 
+  def mark_callbacks_processed_and_clear_errors(callback_ids) do
+    {_count, _} =
+      from(a in ActionExecution, where: a.callback_id in ^callback_ids)
+      |> Repo.update_all(
+        set: [
+          processed: true,
+          last_failure_reason: nil,
+          consecutive_failures: 0,
+          on_hold_until: nil
+        ]
+      )
+  end
+
   def handle_batch_failure(action_ids, reason) do
     hold_until = DateTime.add(DateTime.utc_now(), @hold_duration_seconds, :second)
     threshold = @max_consecutive_failures
@@ -107,7 +120,7 @@ defmodule Throttle.ActionQueries do
     |> Repo.update_all([])
   end
 
-  defp safe_to_integer(value, default) when is_integer(value), do: value
+  defp safe_to_integer(value, _default) when is_integer(value), do: value
 
   defp safe_to_integer(value, default) when is_binary(value) do
     case Integer.parse(value) do

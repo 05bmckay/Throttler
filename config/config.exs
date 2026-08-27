@@ -2,7 +2,14 @@ import Config
 
 # General application configuration
 config :throttle,
-  ecto_repos: [Throttle.Repo]
+  ecto_repos: [Throttle.Repo],
+  # HubSpot otherwise releases blocked actions after one week, even when the
+  # throttler has not completed them. Four weeks is an explicit, configurable
+  # safety window; queue-size validation is still required for extreme rates.
+  hubspot_block_expiration_duration: "P4W",
+  # Recovery is deliberately ramped. JobCleaner starts at most this many
+  # missing queue runners per five-minute cron tick.
+  recovery_queues_per_run: 1
 
 # Configures the endpoint
 config :throttle, ThrottleWeb.Endpoint,

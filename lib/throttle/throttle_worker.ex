@@ -59,6 +59,7 @@ defmodule Throttle.ThrottleWorker do
 
     unique_executions = Enum.uniq_by(executions, & &1.callback_id)
     action_ids = Enum.map(unique_executions, & &1.id)
+    callback_ids = Enum.map(unique_executions, & &1.callback_id)
 
     if length(unique_executions) < length(executions) do
       Logger.warning(
@@ -72,7 +73,9 @@ defmodule Throttle.ThrottleWorker do
       :ok ->
         # Success: Mark processed and clear error fields
         Logger.info("Batch complete sent successfully for actions: #{inspect(action_ids)}")
-        ActionQueries.mark_actions_processed_and_clear_errors(action_ids)
+        # Mark by callback ID so duplicate rows created by HubSpot retries don't
+        # generate another completion request on a later tick.
+        ActionQueries.mark_callbacks_processed_and_clear_errors(callback_ids)
 
         # Emit telemetry event for successful action processing
         :telemetry.execute(
@@ -84,13 +87,8 @@ defmodule Throttle.ThrottleWorker do
         :ok
 
       {:error, {:http_error, 403, _body}} ->
-        # Handle 403 specifically: Increment failure count, potentially put on hold
-        Logger.error(
-          "Batch failed with 403 Forbidden for actions: #{inspect(action_ids)}. Incrementing failure count."
-        )
+        Logger.error("Batch failed with 403 Forbidden for actions: #{inspect(action_ids)}.")
 
-        ActionQueries.handle_batch_failure(action_ids, "forbidden")
-        # Return specific error
         {:error, :forbidden}
 
       {:error, {:rate_limited, retry_after}} ->
@@ -102,13 +100,10 @@ defmodule Throttle.ThrottleWorker do
         {:error, {:rate_limited, retry_after}}
 
       error ->
-        # Other errors: Increment failure count, potentially put on hold
         Logger.error(
-          "Error sending batch complete for actions: #{inspect(action_ids)}. Error: #{inspect(error)}. Incrementing failure count."
+          "Error sending batch complete for actions: #{inspect(action_ids)}. Error: #{inspect(error)}."
         )
 
-        ActionQueries.handle_batch_failure(action_ids, "other_error")
-        # Return original error
         error
     end
   end

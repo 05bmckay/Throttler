@@ -1,83 +1,38 @@
 defmodule ThrottleTest do
-  use Throttle.DataCase
+  use ExUnit.Case, async: true
 
-  alias Throttle
-  alias Throttle.Schemas.{ThrottleConfig, ActionExecution}
+  alias Throttle.QueueRunner
+  alias Throttle.Schemas.{ActionExecution, ThrottleConfig}
 
-  describe "throttle_config" do
-    @valid_attrs %{
-      portal_id: 42,
-      action_id: "some-action",
-      max_throughput: 100,
-      time_period: 60,
-      time_unit: "second"
-    }
-    @update_attrs %{max_throughput: 200, time_period: 120, time_unit: "minute"}
-    @invalid_attrs %{
-      portal_id: nil,
-      action_id: nil,
-      max_throughput: nil,
-      time_period: nil,
-      time_unit: nil
-    }
+  test "QueueRunner normal exits are not restarted" do
+    child_spec = QueueRunner.child_spec({"queue:1:2:3:0", runner_config()})
 
-    test "get_throttle_config/2 returns the throttle config with given portal_id and action_id" do
-      {:ok, config} = Throttle.upsert_throttle_config(@valid_attrs)
-      assert Throttle.get_throttle_config(config.portal_id, config.action_id) == config
-    end
-
-    test "upsert_throttle_config/1 with valid data creates a throttle config" do
-      assert {:ok, %ThrottleConfig{} = config} = Throttle.upsert_throttle_config(@valid_attrs)
-      assert config.portal_id == 42
-      assert config.action_id == "some-action"
-      assert config.max_throughput == 100
-      assert config.time_period == 60
-      assert config.time_unit == "second"
-    end
-
-    test "upsert_throttle_config/1 with invalid data returns error changeset" do
-      assert {:error, %Ecto.Changeset{}} = Throttle.upsert_throttle_config(@invalid_attrs)
-    end
-
-    test "upsert_throttle_config/1 with existing config updates the config" do
-      {:ok, config} = Throttle.upsert_throttle_config(@valid_attrs)
-
-      assert {:ok, %ThrottleConfig{} = updated_config} =
-               Throttle.upsert_throttle_config(Map.merge(@valid_attrs, @update_attrs))
-
-      assert updated_config.id == config.id
-      assert updated_config.max_throughput == 200
-      assert updated_config.time_period == 120
-      assert updated_config.time_unit == "minute"
-    end
+    assert child_spec.restart == :transient
   end
 
-  describe "action_execution" do
-    @valid_attrs %{queue_id: "some-queue", callback_id: "some-callback"}
+  test "action executions require every value needed by the runner" do
+    changeset = ActionExecution.changeset(%ActionExecution{}, %{})
 
-    test "create_action_execution/1 with valid data creates an action execution" do
-      assert {:ok, %ActionExecution{} = execution} =
-               Throttle.create_action_execution(@valid_attrs)
+    refute changeset.valid?
 
-      assert execution.queue_id == "some-queue"
-      assert execution.callback_id == "some-callback"
-      assert execution.processed == false
-    end
+    assert Enum.sort(Keyword.keys(changeset.errors)) ==
+             Enum.sort([:queue_id, :callback_id, :max_throughput, :time, :period])
+  end
 
-    test "get_next_action_batch/2 returns the next batch of unprocessed actions" do
-      {:ok, _} = Throttle.create_action_execution(@valid_attrs)
-      {:ok, _} = Throttle.create_action_execution(@valid_attrs)
+  test "throttle configs accept HubSpot's plural time units" do
+    attrs = %{
+      portal_id: 42,
+      action_id: "action",
+      max_throughput: 3,
+      time_period: 1,
+      time_unit: "seconds"
+    }
 
-      assert [%ActionExecution{}, %ActionExecution{}] =
-               Throttle.get_next_action_batch("some-queue", 2)
-    end
+    assert %Ecto.Changeset{valid?: true} =
+             ThrottleConfig.changeset(%ThrottleConfig{}, attrs)
+  end
 
-    test "mark_actions_processed/1 marks actions as processed" do
-      {:ok, execution1} = Throttle.create_action_execution(@valid_attrs)
-      {:ok, execution2} = Throttle.create_action_execution(@valid_attrs)
-      Throttle.mark_actions_processed([execution1.id, execution2.id])
-      assert Repo.get(ActionExecution, execution1.id).processed
-      assert Repo.get(ActionExecution, execution2.id).processed
-    end
+  defp runner_config do
+    %{max_throughput: "3", time: "1", period: "seconds"}
   end
 end

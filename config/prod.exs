@@ -8,7 +8,9 @@ config :throttle, ThrottleWeb.Endpoint,
   server: true
 
 config :logger,
-  level: :info
+  level: :info,
+  handle_otp_reports: true,
+  handle_sasl_reports: true
 
 config :logger, :console,
   format: "$time $metadata[$level] $message\n",

@@ -46,6 +46,8 @@ mix phx.server
 |----------|----------|-------------|
 | `DATABASE_URL` | Yes | PostgreSQL connection string |
 | `SECRET_KEY_BASE` | Production | Phoenix signing key (generate with `mix phx.gen.secret`) |
+| `HUBSPOT_BLOCK_EXPIRATION_DURATION` | No | ISO 8601 duration for blocked workflow actions (default `P4W`) |
+| `THROTTLE_RECOVERY_QUEUES_PER_RUN` | No | Missing backlog runners started per 5-minute recovery pass (default: 1) |
 | `ENCRYPTION_KEY` | Yes | AES-256-GCM key for OAuth token encryption at rest |
 | `HUBSPOT_CLIENT_ID` | Yes | HubSpot app OAuth client ID |
 | `HUBSPOT_CLIENT_SECRET` | Yes | HubSpot app OAuth client secret |
@@ -165,3 +167,7 @@ MIX_ENV=prod mix release --overwrite
 ```
 
 The release reads all secrets from environment variables at boot via `config/runtime.exs`.
+
+Render builds with `./build.sh` and starts with `./start.sh`. The start script
+applies pending migrations before the endpoint accepts traffic. Configure the
+Render health check path as `/api/health`.

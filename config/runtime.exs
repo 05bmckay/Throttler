@@ -1,6 +1,12 @@
 import Config
 
 if config_env() == :prod do
+  recovery_queues_per_run =
+    case Integer.parse(System.get_env("THROTTLE_RECOVERY_QUEUES_PER_RUN") || "1") do
+      {value, ""} when value > 0 -> value
+      _ -> raise "THROTTLE_RECOVERY_QUEUES_PER_RUN must be a positive integer"
+    end
+
   database_url =
     System.get_env("DATABASE_URL") ||
       raise "DATABASE_URL environment variable is not set"
@@ -28,6 +34,9 @@ if config_env() == :prod do
     hubspot_client_id: System.get_env("HUBSPOT_CLIENT_ID"),
     hubspot_client_secret: System.get_env("HUBSPOT_CLIENT_SECRET"),
     hubspot_redirect_uri: System.get_env("HUBSPOT_REDIRECT_URI"),
+    recovery_queues_per_run: recovery_queues_per_run,
+    hubspot_block_expiration_duration:
+      System.get_env("HUBSPOT_BLOCK_EXPIRATION_DURATION") || "P4W",
     encryption_key:
       System.get_env("ENCRYPTION_KEY") ||
         raise("ENCRYPTION_KEY environment variable is not set")

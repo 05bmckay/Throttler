@@ -12,6 +12,7 @@ defmodule Throttle.ActionBatcher do
   @max_flush_interval 5000
   @target_batch_size 50
   @max_batch_size 100
+  @max_pending_actions 20_000
 
   def start_link(_opts) do
     GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
@@ -26,6 +27,7 @@ defmodule Throttle.ActionBatcher do
       # P1-1: O(1) size tracking instead of length/1
       buffer_size: 0,
       queues: %{},
+      queued_size: 0,
       flush_interval: @max_flush_interval,
       timer_ref: nil,
       # Async flush state
@@ -45,10 +47,10 @@ defmodule Throttle.ActionBatcher do
     merged_size = state.buffer_size + length(state.pending_flush)
 
     Logger.info(
-      "ActionBatcher terminating (#{inspect(reason)}), flushing #{merged_size} actions (#{state.buffer_size} buffered + #{length(state.pending_flush)} in-flight)"
+      "ActionBatcher terminating (#{inspect(reason)}), flushing #{merged_size + state.queued_size} actions (#{state.buffer_size} buffered + #{length(state.pending_flush)} in-flight + #{state.queued_size} queued)"
     )
 
-    if merged_size > 0 do
+    if merged_size + state.queued_size > 0 do
       do_flush_sync(%{state | buffer: merged_buffer, buffer_size: merged_size})
     end
 
@@ -56,18 +58,28 @@ defmodule Throttle.ActionBatcher do
   end
 
   def add_action(attrs) do
-    GenServer.cast(__MODULE__, {:add_action, attrs})
+    GenServer.call(__MODULE__, {:add_action, attrs}, 5_000)
+  catch
+    :exit, _reason -> {:error, :unavailable}
   end
 
-  def handle_cast({:add_action, attrs}, state) do
-    new_buffer = [attrs | state.buffer]
-    # P1-1: O(1) increment instead of O(n) length/1
-    new_size = state.buffer_size + 1
+  def handle_call({:add_action, _attrs}, _from, state)
+      when state.buffer_size + length(state.pending_flush) + state.queued_size >=
+             @max_pending_actions do
+    Logger.warning(
+      "ActionBatcher at capacity (#{@max_pending_actions}), rejecting action so HubSpot can retry"
+    )
 
-    if new_size >= @buffer_size do
-      {:noreply, flush_buffer(%{state | buffer: new_buffer, buffer_size: new_size})}
+    {:reply, {:error, :overloaded}, state}
+  end
+
+  def handle_call({:add_action, attrs}, _from, state) do
+    new_state = %{state | buffer: [attrs | state.buffer], buffer_size: state.buffer_size + 1}
+
+    if new_state.buffer_size >= @buffer_size do
+      {:reply, :ok, flush_buffer(new_state)}
     else
-      {:noreply, %{state | buffer: new_buffer, buffer_size: new_size}}
+      {:reply, :ok, new_state}
     end
   end
 
@@ -91,6 +103,7 @@ defmodule Throttle.ActionBatcher do
     new_state = %{
       state
       | queues: final_queues,
+        queued_size: count_queued_actions(final_queues),
         flush_interval: new_interval,
         flushing: false,
         flush_task_ref: nil,
@@ -156,14 +169,39 @@ defmodule Throttle.ActionBatcher do
   end
 
   defp do_flush_sync(state) do
-    {actions_to_flush, _remaining} = Enum.split(state.buffer, @buffer_size)
-
     new_queues =
-      Enum.reduce(actions_to_flush, state.queues, fn action, acc ->
+      Enum.reduce(state.buffer, state.queues, fn action, acc ->
         Map.update(acc, action.queue_id, [action], &[action | &1])
       end)
 
-    process_queues(new_queues)
+    drain_queues_sync(new_queues, 0)
+  end
+
+  defp drain_queues_sync(queues, total_flushed) when map_size(queues) == 0 do
+    {total_flushed, %{}}
+  end
+
+  defp drain_queues_sync(queues, total_flushed) do
+    {remaining, flushed_count} = process_queues(queues)
+
+    cond do
+      map_size(remaining) == 0 ->
+        {total_flushed + flushed_count, %{}}
+
+      flushed_count == 0 ->
+        Logger.error(
+          "Synchronous shutdown flush made no progress; #{count_queued_actions(remaining)} actions remain non-durable"
+        )
+
+        {total_flushed, remaining}
+
+      true ->
+        drain_queues_sync(remaining, total_flushed + flushed_count)
+    end
+  end
+
+  defp count_queued_actions(queues) do
+    Enum.reduce(queues, 0, fn {_queue_id, actions}, count -> count + length(actions) end)
   end
 
   defp process_queues(queues) do

@@ -12,7 +12,10 @@ defmodule Throttle.QueueRunner do
     - Stops itself when the queue is drained (no unprocessed actions)
     - Restarted by ActionBatcher when new actions arrive for the queue
   """
-  use GenServer
+  # A drained runner exits normally and should stay stopped until new work arrives.
+  # The default `:permanent` restart policy turns that normal lifecycle into a
+  # DynamicSupervisor restart storm when several queues drain together.
+  use GenServer, restart: :transient
   require Logger
 
   alias Throttle.ActionQueries

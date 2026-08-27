@@ -108,6 +108,26 @@ defmodule Throttle.OAuthManager do
     end
   end
 
+  @doc """
+  Refreshes a portal token even when its stored expiry is still in the future.
+
+  HubSpot can invalidate a token before `expires_at`; a 401 must therefore bypass
+  the normal expiry check instead of calling `get_token/1` again.
+  """
+  def force_refresh_token(portal_id) do
+    Throttle.OAuthRefreshLock.refresh_if_needed(portal_id, fn ->
+      case Repo.get_by(SecureOAuthToken, portal_id: portal_id) do
+        nil ->
+          {:error, :token_not_found}
+
+        token ->
+          with {:ok, decrypted_token} <- SecureOAuthToken.decrypt_tokens(token) do
+            refresh_token(decrypted_token)
+          end
+      end
+    end)
+  end
+
   def refresh_token(token) do
     Logger.info("Refreshing token for portal: #{token.portal_id}")
 

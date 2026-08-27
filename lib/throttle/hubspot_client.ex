@@ -126,15 +126,16 @@ defmodule Throttle.HubSpotClient do
   # Extract Retry-After header value from response headers
   defp extract_retry_after(headers) do
     headers
-    |> Enum.find_value(fn
-      {"Retry-After", value} ->
+    |> Enum.find_value(fn {name, value} ->
+      if String.downcase(name) == "retry-after" do
         case Integer.parse(value) do
-          {int, _} -> int
+          {int, ""} -> int
           :error -> nil
+          _ -> nil
         end
-
-      _ ->
+      else
         nil
+      end
     end)
   end
 
