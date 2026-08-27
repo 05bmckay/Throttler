@@ -169,6 +169,6 @@ MIX_ENV=prod mix release --overwrite
 
 The release reads all secrets from environment variables at boot via `config/runtime.exs`.
 
-Render builds with `./build.sh` and starts with `./start.sh`. The start script
-applies pending migrations before the endpoint accepts traffic. Configure the
-Render health check path as `/api/health`.
+Render's build and start scripts both reconcile pending migrations. Readiness is
+available at `/api/health`, with `/` serving the same check for Render's default
+root probe.

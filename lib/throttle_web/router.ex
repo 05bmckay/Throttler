@@ -9,6 +9,12 @@ defmodule ThrottleWeb.Router do
     plug(ThrottleWeb.Plugs.HubSpotSignature)
   end
 
+  scope "/", ThrottleWeb do
+    pipe_through(:api)
+
+    get("/", HealthController, :show)
+  end
+
   scope "/api", ThrottleWeb do
     pipe_through([:api, :hubspot_verified])
 

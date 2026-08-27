@@ -13,3 +13,7 @@ mix phx.digest
 
 # Build the release and overwrite the existing release directory
 MIX_ENV=prod mix release --overwrite
+
+# Render currently starts the service with `mix phx.server`, so reconcile the
+# schema only after the entire build succeeds. This is a no-op when fully up.
+MIX_ENV=prod mix ecto.migrate

@@ -6,4 +6,10 @@ defmodule ThrottleWeb.HealthControllerTest do
 
     assert %{"status" => "ok"} = json_response(conn, 200)
   end
+
+  test "GET / supports Render's default root health probe", %{conn: conn} do
+    conn = get(conn, "/")
+
+    assert %{"status" => "ok"} = json_response(conn, 200)
+  end
 end
