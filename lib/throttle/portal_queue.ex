@@ -165,6 +165,7 @@ defmodule Throttle.PortalQueue do
               "Batch rate limited for portal #{portal_id}, retrying #{length(executions)} executions in #{retry_after}s"
             )
 
+            ActionQueries.defer_rate_limited_actions(action_ids, retry_after)
             Process.send_after(self(), {:retry_batch, executions}, retry_after * 1_000)
 
           {:error, reason} ->

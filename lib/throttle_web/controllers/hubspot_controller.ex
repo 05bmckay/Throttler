@@ -18,7 +18,8 @@ defmodule ThrottleWeb.HubSpotController do
              processed: false,
              max_throughput: max_throughput,
              time: time,
-             period: period
+             period: period,
+             expires_at: Throttle.BlockExpiration.expires_at()
            }),
          :ok <- handle_create_action_result(result) do
       send_success_response(conn)
@@ -72,8 +73,7 @@ defmodule ThrottleWeb.HubSpotController do
   def block_output_fields do
     %{
       hs_execution_state: "BLOCK",
-      hs_expiration_duration:
-        Application.fetch_env!(:throttle, :hubspot_block_expiration_duration)
+      hs_expiration_duration: Throttle.BlockExpiration.configured_duration()
     }
   end
 

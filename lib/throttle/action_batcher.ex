@@ -236,15 +236,7 @@ defmodule Throttle.ActionBatcher do
          end) do
       {:ok, {inserted_actions, remaining}} ->
         if inserted_actions != [] do
-          sample = hd(inserted_actions)
-
-          config = %{
-            max_throughput: sample.max_throughput,
-            time: sample.time,
-            period: sample.period
-          }
-
-          QueueRunner.ensure_started(queue_id, config)
+          QueueRunner.ensure_started(queue_id)
         end
 
         {inserted_actions, remaining}
@@ -259,7 +251,15 @@ defmodule Throttle.ActionBatcher do
     now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
 
     action
-    |> Map.take([:queue_id, :callback_id, :processed, :max_throughput, :time, :period])
+    |> Map.take([
+      :queue_id,
+      :callback_id,
+      :processed,
+      :max_throughput,
+      :time,
+      :period,
+      :expires_at
+    ])
     |> Map.put(:inserted_at, now)
     |> Map.put(:updated_at, now)
   end

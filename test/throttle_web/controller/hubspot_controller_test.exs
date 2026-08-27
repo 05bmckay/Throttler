@@ -11,6 +11,11 @@ defmodule ThrottleWeb.HubSpotControllerTest do
            } = HubSpotController.block_output_fields()
   end
 
+  test "the configured BLOCK window produces a persisted deadline" do
+    now = ~U[2026-08-27 12:00:00Z]
+    assert Throttle.BlockExpiration.expires_at(now) == ~U[2026-09-24 12:00:00Z]
+  end
+
   test "rejects invalid rate settings instead of creating an undrainable action" do
     conn =
       build_conn()

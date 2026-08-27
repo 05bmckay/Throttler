@@ -6,6 +6,9 @@ defmodule Throttle.Application do
   use Application
 
   def start(_type, _args) do
+    Throttle.BlockExpiration.configured_seconds!()
+    :ok = Throttle.LogRedactor.install()
+
     # Attach Oban's default telemetry logger for observability
     Oban.Telemetry.attach_default_logger(:info)
 
@@ -33,7 +36,8 @@ defmodule Throttle.Application do
        strategy: :one_for_one, name: Throttle.QueueRunnerSupervisor, max_children: 1000},
       {Registry, keys: :unique, name: Throttle.PortalRegistry},
       {DynamicSupervisor,
-       strategy: :one_for_one, name: Throttle.PortalQueueSupervisor, max_children: 500}
+       strategy: :one_for_one, name: Throttle.PortalQueueSupervisor, max_children: 500},
+      Throttle.StartupRecovery
     ]
 
     opts = [strategy: :one_for_one, name: Throttle.Supervisor]

@@ -38,13 +38,7 @@ defmodule Throttle.Encryption do
     rescue
       e ->
         Logger.error("Decryption failed: #{inspect(e)}")
-        Logger.error("Ciphertext: #{inspect(ciphertext)}")
         {:error, :decryption_failed}
-    catch
-      :error, :function_clause ->
-        Logger.error("Decryption failed: Invalid padding")
-        Logger.error("Ciphertext: #{inspect(ciphertext)}")
-        {:error, :invalid_padding}
     end
   end
 

@@ -20,8 +20,7 @@ defmodule Throttle.QueueRunner do
 
   alias Throttle.ActionQueries
 
-  # Must exceed HubSpotClient's request_timeout (30s) + retry delays (3 * 2s)
-  @in_flight_expiry_ms 45_000
+  @in_flight_expiry_ms :timer.seconds(ActionQueries.claim_lease_seconds())
   @idle_timeout_ms 10_000
 
   ## Client API
@@ -32,20 +31,29 @@ defmodule Throttle.QueueRunner do
   Idempotent — if a runner already exists, returns its pid.
   Handles the race condition where two callers try to start simultaneously.
   """
-  def ensure_started(queue_id, config) do
-    case Registry.lookup(Throttle.QueueRunnerRegistry, queue_id) do
-      [{pid, _}] ->
-        {:ok, pid}
+  def ensure_started(queue_id) do
+    with {:ok, config} <- ActionQueries.latest_queue_config(queue_id) do
+      case Registry.lookup(Throttle.QueueRunnerRegistry, queue_id) do
+        [{pid, _}] ->
+          :ok = GenServer.call(pid, {:update_config, config})
+          {:ok, pid}
 
-      [] ->
-        case DynamicSupervisor.start_child(
-               Throttle.QueueRunnerSupervisor,
-               {__MODULE__, {queue_id, config}}
-             ) do
-          {:ok, pid} -> {:ok, pid}
-          {:error, {:already_started, pid}} -> {:ok, pid}
-          error -> error
-        end
+        [] ->
+          case DynamicSupervisor.start_child(
+                 Throttle.QueueRunnerSupervisor,
+                 {__MODULE__, {queue_id, config}}
+               ) do
+            {:ok, pid} ->
+              {:ok, pid}
+
+            {:error, {:already_started, pid}} ->
+              :ok = GenServer.call(pid, {:update_config, config})
+              {:ok, pid}
+
+            error ->
+              error
+          end
+      end
     end
   end
 
@@ -58,6 +66,7 @@ defmodule Throttle.QueueRunner do
   def init({queue_id, config}) do
     state = %{
       queue_id: queue_id,
+      config_id: config.config_id,
       max_throughput: config.max_throughput,
       time: config.time,
       period: config.period,
@@ -72,6 +81,28 @@ defmodule Throttle.QueueRunner do
     send(self(), :tick)
 
     {:ok, state}
+  end
+
+  def handle_call({:update_config, config}, _from, state) do
+    cond do
+      config.config_id <= state.config_id ->
+        {:reply, :ok, state}
+
+      same_rate?(state, config) ->
+        {:reply, :ok, %{state | config_id: config.config_id}}
+
+      true ->
+        updated = apply_config(state, config)
+
+        if state.timer_ref, do: Process.cancel_timer(state.timer_ref)
+
+        Logger.info(
+          "QueueRunner #{state.queue_id} rate updated from #{state.max_throughput}/#{state.time} #{state.period} to #{updated.max_throughput}/#{updated.time} #{updated.period}"
+        )
+
+        timer_ref = Process.send_after(self(), :tick, updated.delay_ms)
+        {:reply, :ok, %{updated | timer_ref: timer_ref, idle_since: nil}}
+    end
   end
 
   def handle_info(:tick, state) do
@@ -107,6 +138,14 @@ defmodule Throttle.QueueRunner do
 
           {:noreply,
            %{state | timer_ref: timer_ref, in_flight: updated_in_flight, idle_since: nil}}
+
+        {:error, reason} ->
+          Logger.error(
+            "QueueRunner #{state.queue_id} could not claim actions: #{inspect(reason)}"
+          )
+
+          timer_ref = Process.send_after(self(), :tick, state.delay_ms)
+          {:noreply, %{state | timer_ref: timer_ref, in_flight: in_flight}}
       end
     rescue
       e ->
@@ -163,6 +202,22 @@ defmodule Throttle.QueueRunner do
 
   defp prune_expired(in_flight, now) do
     Map.filter(in_flight, fn {_id, ts} -> now - ts < @in_flight_expiry_ms end)
+  end
+
+  defp apply_config(state, config) do
+    %{
+      state
+      | config_id: config.config_id,
+        max_throughput: config.max_throughput,
+        time: config.time,
+        period: config.period,
+        delay_ms: calculate_delay_ms(config.time, config.period)
+    }
+  end
+
+  defp same_rate?(state, config) do
+    state.max_throughput == config.max_throughput and state.time == config.time and
+      state.period == config.period
   end
 
   defp calculate_delay_ms(time, period) do

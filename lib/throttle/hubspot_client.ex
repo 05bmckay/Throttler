@@ -86,7 +86,7 @@ defmodule Throttle.HubSpotClient do
         ray_id = extract_cloudflare_ray_id(response_body)
         Logger.error("API request blocked (403 Forbidden). Ray ID: #{ray_id || "Not Found"}.")
         # Return error without crashing
-        {:error, {:http_error, 403, response_body}}
+        {:error, {:http_error, 403}}
 
       {:ok, %Finch.Response{status: 429, headers: response_headers}} ->
         retry_after = extract_retry_after(response_headers) || 60
@@ -101,21 +101,9 @@ defmodule Throttle.HubSpotClient do
 
         {:error, {:rate_limited, retry_after}}
 
-      {:ok, %Finch.Response{status: status, body: response_body}} ->
-        # Attempt to parse other errors as JSON, but handle potential decode errors
-        case Jason.decode(response_body) do
-          {:ok, parsed_body} ->
-            Logger.error("API error: Status #{status}, Body: #{inspect(parsed_body)}")
-
-            {:error, {:api_error, status, parsed_body}}
-
-          {:error, decode_error} ->
-            Logger.error(
-              "API error: Status #{status}, Failed to decode JSON body: #{inspect(decode_error)}, Body: #{inspect(response_body)}"
-            )
-
-            {:error, {:http_error, status, response_body}}
-        end
+      {:ok, %Finch.Response{status: status}} ->
+        Logger.error("HubSpot callback API returned status #{status}")
+        {:error, {:api_error, status}}
 
       {:error, exception} ->
         Logger.error("HTTP error: #{Exception.message(exception)}")

@@ -2,6 +2,7 @@ defmodule Throttle.Workers.JobCleanerTest do
   use Throttle.DataCase
 
   alias Throttle.Repo
+  alias Throttle.ActionQueries
   alias Throttle.Schemas.ActionExecution
   alias Throttle.Workers.JobCleaner
 
@@ -26,12 +27,12 @@ defmodule Throttle.Workers.JobCleanerTest do
 
     on_exit(fn ->
       if Process.alive?(runner_pid) do
-        DynamicSupervisor.terminate_child(Throttle.QueueRunnerSupervisor, runner_pid)
+        GenServer.stop(runner_pid, :normal)
       end
 
       case Registry.lookup(Throttle.PortalRegistry, portal_id) do
         [{portal_pid, _}] ->
-          DynamicSupervisor.terminate_child(Throttle.PortalQueueSupervisor, portal_pid)
+          GenServer.stop(portal_pid, :normal)
 
         [] ->
           :ok
@@ -64,6 +65,89 @@ defmodule Throttle.Workers.JobCleanerTest do
     end)
   end
 
+  test "uses the latest rate once for a queue with mixed historical configurations" do
+    portal_id = System.unique_integer([:positive])
+    queue_id = "queue:#{portal_id}:mixed"
+    now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
+
+    old =
+      execution_attrs(queue_id)
+      |> Map.merge(%{
+        callback_id: "old-rate",
+        max_throughput: "1",
+        time: "1",
+        period: "hours",
+        inserted_at: now,
+        updated_at: now
+      })
+
+    latest =
+      execution_attrs(queue_id)
+      |> Map.merge(%{
+        callback_id: "latest-rate",
+        max_throughput: "4",
+        time: "2",
+        period: "seconds",
+        on_hold_until:
+          DateTime.utc_now() |> DateTime.add(3_600, :second) |> DateTime.truncate(:second),
+        inserted_at: NaiveDateTime.add(now, 1, :second),
+        updated_at: NaiveDateTime.add(now, 1, :second)
+      })
+
+    assert {2, nil} = Repo.insert_all(ActionExecution, [old, latest])
+
+    assert [%{max_throughput: "4", time: "2", period: "seconds"}] =
+             ActionQueries.runnable_queue_configs()
+
+    assert :ok = JobCleaner.recover_missing_queues(1)
+    assert [{runner_pid, _}] = Registry.lookup(Throttle.QueueRunnerRegistry, queue_id)
+
+    state = :sys.get_state(runner_pid)
+    assert state.max_throughput == "4"
+    assert state.time == "2"
+    assert state.period == "seconds"
+    assert state.delay_ms == 2_000
+
+    newer =
+      execution_attrs(queue_id)
+      |> Map.merge(%{
+        callback_id: "newest-rate",
+        max_throughput: "2",
+        time: "1",
+        period: "minutes",
+        inserted_at: NaiveDateTime.add(now, 2, :second),
+        updated_at: NaiveDateTime.add(now, 2, :second)
+      })
+
+    assert {1, nil} = Repo.insert_all(ActionExecution, [newer])
+    assert {:ok, ^runner_pid} = Throttle.QueueRunner.ensure_started(queue_id)
+
+    updated_state = :sys.get_state(runner_pid)
+    assert updated_state.max_throughput == "2"
+    assert updated_state.delay_ms == 60_000
+
+    assert :ok =
+             GenServer.call(runner_pid, {
+               :update_config,
+               %{
+                 config_id: state.config_id,
+                 max_throughput: "99",
+                 time: "1",
+                 period: "seconds"
+               }
+             })
+
+    state_after_stale_update = :sys.get_state(runner_pid)
+    assert state_after_stale_update.config_id == updated_state.config_id
+    assert state_after_stale_update.max_throughput == "2"
+    assert state_after_stale_update.delay_ms == 60_000
+
+    on_exit(fn ->
+      stop_runner(runner_pid)
+      stop_portal_queue(portal_id)
+    end)
+  end
+
   defp execution_attrs(queue_id) do
     now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
 
@@ -86,13 +170,13 @@ defmodule Throttle.Workers.JobCleanerTest do
 
   defp stop_runner(pid) do
     if Process.alive?(pid) do
-      DynamicSupervisor.terminate_child(Throttle.QueueRunnerSupervisor, pid)
+      GenServer.stop(pid, :normal)
     end
   end
 
   defp stop_portal_queue(portal_id) do
     case Registry.lookup(Throttle.PortalRegistry, portal_id) do
-      [{pid, _}] -> DynamicSupervisor.terminate_child(Throttle.PortalQueueSupervisor, pid)
+      [{pid, _}] -> GenServer.stop(pid, :normal)
       [] -> :ok
     end
   end

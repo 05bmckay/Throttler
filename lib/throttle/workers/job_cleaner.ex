@@ -9,25 +9,31 @@ defmodule Throttle.Workers.JobCleaner do
   use Oban.Worker, queue: :maintenance, max_attempts: 3
 
   require Logger
-  import Ecto.Query
-
-  alias Throttle.Repo
-  alias Throttle.Schemas.ActionExecution
+  alias Throttle.ActionQueries
 
   # Run every 5 minutes
   @impl Oban.Worker
   def perform(%Oban.Job{}) do
     Logger.info("Running JobCleaner...")
+    recover_missing_queues(recovery_queues_per_run())
+  end
+
+  def recover_missing_queues(limit) when is_integer(limit) and limit > 0 do
+    {expired_count, _} = ActionQueries.expire_overdue_actions()
+
+    if expired_count > 0 do
+      Logger.warning("Marked #{expired_count} expired HubSpot BLOCK actions as terminal")
+    end
 
     runnable_queues =
-      fetch_runnable_queues()
+      ActionQueries.runnable_queue_configs()
       |> Enum.reject(&runner_active?(&1.queue_id))
       |> Enum.sort_by(&estimated_drain_seconds/1)
-      |> Enum.take(recovery_queues_per_run())
+      |> Enum.take(limit)
 
     results =
       Enum.map(runnable_queues, fn config ->
-        case Throttle.QueueRunner.ensure_started(config.queue_id, config) do
+        case Throttle.QueueRunner.ensure_started(config.queue_id) do
           {:ok, _pid} ->
             :ok
 
@@ -44,33 +50,13 @@ defmodule Throttle.Workers.JobCleaner do
 
     if failures == [] do
       Logger.info(
-        "JobCleaner started #{length(runnable_queues)} missing queue runners (limit #{recovery_queues_per_run()} per run)."
+        "JobCleaner started #{length(runnable_queues)} missing queue runners (limit #{limit} per run)."
       )
 
       :ok
     else
       {:error, {:runner_start_failures, failures}}
     end
-  end
-
-  defp fetch_runnable_queues do
-    now = DateTime.utc_now()
-
-    query =
-      from(ae in ActionExecution,
-        where: not ae.processed and not ae.permanently_failed,
-        where: is_nil(ae.on_hold_until) or ae.on_hold_until <= ^now,
-        group_by: [ae.queue_id, ae.max_throughput, ae.time, ae.period],
-        select: %{
-          queue_id: ae.queue_id,
-          max_throughput: ae.max_throughput,
-          time: ae.time,
-          period: ae.period,
-          backlog_size: count(ae.id)
-        }
-      )
-
-    Repo.all(query)
   end
 
   defp runner_active?(queue_id) do

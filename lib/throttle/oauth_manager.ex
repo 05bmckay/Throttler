@@ -15,7 +15,7 @@ defmodule Throttle.OAuthManager do
 
     case fetch_token_details(token_data["access_token"]) do
       {:ok, token_details} ->
-        Logger.info("Successfully fetched token details: #{inspect(token_details)}")
+        Logger.info("Successfully fetched token details for portal: #{token_details["hub_id"]}")
 
         # Merge token details with original token data for complete response
         full_token_response = Map.merge(token_data, token_details)
@@ -62,10 +62,10 @@ defmodule Throttle.OAuthManager do
           {:error, _} -> {:error, "Failed to decode token details response"}
         end
 
-      {:ok, %Finch.Response{status: status, body: resp_body}} ->
-        Logger.error("Failed to fetch token details. Status code: #{status}, body: #{resp_body}")
+      {:ok, %Finch.Response{status: status}} ->
+        Logger.error("Failed to fetch token details. Status code: #{status}")
 
-        {:error, "Failed to fetch token details. Status code: #{status}, body: #{resp_body}"}
+        {:error, {:token_details_http_error, status}}
 
       {:error, exception} ->
         Logger.error(
@@ -258,10 +258,10 @@ defmodule Throttle.OAuthManager do
           {:error, _} -> {:error, "Failed to decode refresh token response"}
         end
 
-      {:ok, %Finch.Response{status: status, body: resp_body}} ->
-        Logger.error("HubSpot API returned non-200 status code: #{status}, body: #{resp_body}")
+      {:ok, %Finch.Response{status: status}} ->
+        Logger.error("HubSpot token refresh returned non-200 status: #{status}")
 
-        {:error, "HubSpot API returned status code: #{status}, body: #{resp_body}"}
+        {:error, {:token_refresh_http_error, status}}
 
       {:error, exception} ->
         Logger.error("HubSpot API request failed: #{Exception.message(exception)}")

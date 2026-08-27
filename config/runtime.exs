@@ -7,6 +7,12 @@ if config_env() == :prod do
       _ -> raise "THROTTLE_RECOVERY_QUEUES_PER_RUN must be a positive integer"
     end
 
+  startup_recovery_queues =
+    case Integer.parse(System.get_env("THROTTLE_STARTUP_RECOVERY_QUEUES") || "4") do
+      {value, ""} when value > 0 -> value
+      _ -> raise "THROTTLE_STARTUP_RECOVERY_QUEUES must be a positive integer"
+    end
+
   requested_pool_size =
     case Integer.parse(System.get_env("POOL_SIZE") || "20") do
       {value, ""} when value > 0 -> value
@@ -43,6 +49,7 @@ if config_env() == :prod do
     hubspot_client_secret: System.get_env("HUBSPOT_CLIENT_SECRET"),
     hubspot_redirect_uri: System.get_env("HUBSPOT_REDIRECT_URI"),
     recovery_queues_per_run: recovery_queues_per_run,
+    startup_recovery_queues: startup_recovery_queues,
     hubspot_block_expiration_duration:
       System.get_env("HUBSPOT_BLOCK_EXPIRATION_DURATION") || "P4W",
     encryption_key:

@@ -18,16 +18,11 @@ defmodule Throttle.ThrottleWorker do
 
   @impl Oban.Worker
   def perform(%Oban.Job{args: args_map}) do
-    %{
-      queue_id: queue_id,
-      max_throughput: max_throughput,
-      time: time,
-      period: period
-    } = normalize_args(args_map)
+    %{queue_id: queue_id} = normalize_args(args_map)
 
-    config = %{max_throughput: max_throughput, time: time, period: period}
-
-    case Throttle.QueueRunner.ensure_started(queue_id, config) do
+    # The persisted action row is authoritative. Oban jobs may outlive a rate
+    # change, so their copied rate fields must never overwrite newer settings.
+    case Throttle.QueueRunner.ensure_started(queue_id) do
       {:ok, _pid} ->
         Logger.info("QueueRunner started for queue #{queue_id}")
         :ok
@@ -86,7 +81,7 @@ defmodule Throttle.ThrottleWorker do
 
         :ok
 
-      {:error, {:http_error, 403, _body}} ->
+      {:error, {:http_error, 403}} ->
         Logger.error("Batch failed with 403 Forbidden for actions: #{inspect(action_ids)}.")
 
         {:error, :forbidden}
