@@ -1,6 +1,5 @@
 import Config
 
-
 secret_key_base =
   System.get_env("SECRET_KEY_BASE") ||
     raise """
@@ -12,18 +11,18 @@ secret_key_base =
 config :throttle, Throttle.Repo,
   url: System.get_env("DATABASE_URL"),
   show_sensitive_data_on_connection_error: true,
-  pool_size: 90,
+  pool_size: String.to_integer(System.get_env("POOL_SIZE") || "20"),
   ssl: true,
   ssl_opts: [
-     verify: :verify_none
+    verify: :verify_none
   ]
 
 # For development, we disable any cache and enable
 # debugging and code reloading.
 config :throttle, ThrottleWeb.Endpoint,
   http: [
-      port: String.to_integer(System.get_env("PORT") || "4000"),
-      transport_options: [socket_opts: [:inet6]]
+    port: String.to_integer(System.get_env("PORT") || "4000"),
+    transport_options: [socket_opts: [:inet6]]
   ],
   check_origin: false,
   secret_key_base: secret_key_base,

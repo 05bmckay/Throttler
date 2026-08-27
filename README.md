@@ -54,6 +54,7 @@ mix phx.server
 | `HUBSPOT_REDIRECT_URI` | Production | OAuth callback URL (e.g. `https://yourapp.com/api/oauth/callback`) |
 | `BASE_URL` | Production | Public hostname for the app |
 | `PORT` | No | HTTP port (default: 4000) |
+| `POOL_SIZE` | No | PostgreSQL connection pool size (default: 20) |
 
 ## API
 
