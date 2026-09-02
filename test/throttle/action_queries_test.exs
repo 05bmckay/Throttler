@@ -61,6 +61,55 @@ defmodule Throttle.ActionQueriesTest do
     assert DateTime.diff(claimed.on_hold_until, DateTime.utc_now(), :second) >= 179
   end
 
+  test "queued claims can renew their lease without reviving terminal work" do
+    now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
+
+    rows = [
+      execution_attrs("renew-active", now),
+      execution_attrs("renew-processed", now) |> Map.put(:processed, true),
+      execution_attrs("renew-failed", now) |> Map.put(:permanently_failed, true)
+    ]
+
+    assert {3, nil} = Repo.insert_all(ActionExecution, rows)
+    active = Repo.get_by!(ActionExecution, callback_id: "renew-active")
+
+    from(a in ActionExecution, where: a.id == ^active.id)
+    |> Repo.update_all(
+      set: [
+        last_failure_reason: "in_flight",
+        on_hold_until: DateTime.add(DateTime.utc_now(), 1, :second)
+      ]
+    )
+
+    assert {1, nil} = ActionQueries.renew_claims(Enum.map(Repo.all(ActionExecution), & &1.id))
+
+    renewed = Repo.reload!(active)
+    assert renewed.last_failure_reason == "in_flight"
+    assert DateTime.diff(renewed.on_hold_until, DateTime.utc_now(), :second) >= 179
+  end
+
+  test "processable action IDs exclude completed, failed, and expired rows" do
+    now_utc = DateTime.utc_now() |> DateTime.truncate(:second)
+    now = DateTime.to_naive(now_utc)
+
+    rows = [
+      execution_attrs("processable", now),
+      execution_attrs("already-processed", now) |> Map.put(:processed, true),
+      execution_attrs("terminal", now) |> Map.put(:permanently_failed, true),
+      execution_attrs("expired-before-send", now)
+      |> Map.put(:expires_at, DateTime.add(now_utc, -1, :second))
+    ]
+
+    assert {4, nil} = Repo.insert_all(ActionExecution, rows)
+    executions = Repo.all(ActionExecution)
+    ids = Enum.map(executions, & &1.id)
+
+    processable_ids = ActionQueries.processable_action_ids(ids)
+    expected_id = Enum.find(executions, &(&1.callback_id == "processable")).id
+
+    assert processable_ids == MapSet.new([expected_id])
+  end
+
   test "rate-limit deferral reserves callbacks through the retry processing window" do
     now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
     attrs = execution_attrs("rate-limited", now)

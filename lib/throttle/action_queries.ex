@@ -21,6 +21,47 @@ defmodule Throttle.ActionQueries do
 
   def claim_lease_seconds, do: @claim_lease_seconds
 
+  def renew_claims([]), do: {0, nil}
+
+  def renew_claims(action_ids) when is_list(action_ids) do
+    lease_until =
+      DateTime.utc_now()
+      |> DateTime.add(@claim_lease_seconds, :second)
+      |> DateTime.truncate(:second)
+
+    from(a in ActionExecution,
+      where: a.id in ^action_ids,
+      where: not a.processed and not a.permanently_failed,
+      where: a.last_failure_reason == "in_flight",
+      update: [
+        set: [
+          on_hold_until:
+            fragment(
+              "CASE WHEN on_hold_until IS NULL OR on_hold_until < ? THEN ? ELSE on_hold_until END",
+              ^lease_until,
+              ^lease_until
+            )
+        ]
+      ]
+    )
+    |> Repo.update_all([])
+  end
+
+  def processable_action_ids([]), do: MapSet.new()
+
+  def processable_action_ids(action_ids) when is_list(action_ids) do
+    now = DateTime.utc_now()
+
+    from(a in ActionExecution,
+      where: a.id in ^action_ids,
+      where: not a.processed and not a.permanently_failed,
+      where: is_nil(a.expires_at) or a.expires_at > ^now,
+      select: a.id
+    )
+    |> Repo.all()
+    |> MapSet.new()
+  end
+
   def get_next_action_batch(queue_id, max_throughput, exclude_ids \\ []) do
     throughput = safe_to_integer(max_throughput, 10)
     now = DateTime.utc_now() |> DateTime.truncate(:second)
@@ -223,7 +264,9 @@ defmodule Throttle.ActionQueries do
 
   def mark_callbacks_processed_and_clear_errors(callback_ids) do
     {_count, _} =
-      from(a in ActionExecution, where: a.callback_id in ^callback_ids)
+      from(a in ActionExecution,
+        where: a.callback_id in ^callback_ids and not a.processed
+      )
       |> Repo.update_all(
         set: [
           processed: true,

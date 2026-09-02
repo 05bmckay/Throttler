@@ -13,6 +13,7 @@ defmodule Throttle.ActionBatcher do
   @target_batch_size 50
   @max_batch_size 100
   @max_pending_actions 20_000
+  @admission_timeout_ms 1_000
 
   def start_link(_opts) do
     GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
@@ -58,28 +59,40 @@ defmodule Throttle.ActionBatcher do
   end
 
   def add_action(attrs) do
-    GenServer.call(__MODULE__, {:add_action, attrs}, 5_000)
+    deadline = System.monotonic_time(:millisecond) + @admission_timeout_ms
+    GenServer.call(__MODULE__, {:add_action, attrs, deadline}, @admission_timeout_ms + 250)
   catch
+    :exit, {:timeout, _reason} -> {:error, :overloaded}
     :exit, _reason -> {:error, :unavailable}
   end
 
-  def handle_call({:add_action, _attrs}, _from, state)
-      when state.buffer_size + length(state.pending_flush) + state.queued_size >=
-             @max_pending_actions do
-    Logger.warning(
-      "ActionBatcher at capacity (#{@max_pending_actions}), rejecting action so HubSpot can retry"
-    )
+  def handle_call({:add_action, attrs, deadline}, _from, state) do
+    cond do
+      System.monotonic_time(:millisecond) > deadline ->
+        # GenServer.call timeouts do not remove an already-sent request from
+        # this mailbox. Discard expired admission requests so a webhook that
+        # already received 503 cannot be persisted later as a ghost success.
+        {:reply, {:error, :overloaded}, state}
 
-    {:reply, {:error, :overloaded}, state}
-  end
+      pending_action_count(state) >= @max_pending_actions ->
+        Logger.warning(
+          "ActionBatcher at capacity (#{@max_pending_actions}), rejecting action so HubSpot can retry"
+        )
 
-  def handle_call({:add_action, attrs}, _from, state) do
-    new_state = %{state | buffer: [attrs | state.buffer], buffer_size: state.buffer_size + 1}
+        {:reply, {:error, :overloaded}, state}
 
-    if new_state.buffer_size >= @buffer_size do
-      {:reply, :ok, flush_buffer(new_state)}
-    else
-      {:reply, :ok, new_state}
+      true ->
+        new_state = %{
+          state
+          | buffer: [attrs | state.buffer],
+            buffer_size: state.buffer_size + 1
+        }
+
+        if new_state.buffer_size >= @buffer_size do
+          {:reply, :ok, flush_buffer(new_state)}
+        else
+          {:reply, :ok, new_state}
+        end
     end
   end
 
@@ -202,6 +215,10 @@ defmodule Throttle.ActionBatcher do
 
   defp count_queued_actions(queues) do
     Enum.reduce(queues, 0, fn {_queue_id, actions}, count -> count + length(actions) end)
+  end
+
+  defp pending_action_count(state) do
+    state.buffer_size + length(state.pending_flush) + state.queued_size
   end
 
   defp process_queues(queues) do

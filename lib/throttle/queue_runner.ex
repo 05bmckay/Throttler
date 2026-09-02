@@ -20,7 +20,6 @@ defmodule Throttle.QueueRunner do
 
   alias Throttle.ActionQueries
 
-  @in_flight_expiry_ms :timer.seconds(ActionQueries.claim_lease_seconds())
   @idle_timeout_ms 10_000
 
   ## Client API
@@ -73,6 +72,8 @@ defmodule Throttle.QueueRunner do
       delay_ms: calculate_delay_ms(config.time, config.period),
       timer_ref: nil,
       in_flight: %{},
+      portal_pid: nil,
+      portal_monitor_ref: nil,
       idle_since: nil
     }
 
@@ -105,14 +106,21 @@ defmodule Throttle.QueueRunner do
     end
   end
 
+  def handle_info(:tick, %{in_flight: in_flight} = state) when map_size(in_flight) > 0 do
+    # A queue may have only one delivery batch outstanding at a time. The old
+    # implementation kept claiming at the configured rate while PortalQueue
+    # was still delivering earlier batches. Once the 180-second DB leases
+    # expired, those same rows were claimed and enqueued again indefinitely.
+    timer_ref = Process.send_after(self(), :tick, state.delay_ms)
+    {:noreply, %{state | timer_ref: timer_ref, idle_since: nil}}
+  end
+
   def handle_info(:tick, state) do
     now = System.monotonic_time(:millisecond)
-    in_flight = prune_expired(state.in_flight, now)
-    exclude_ids = Map.keys(in_flight)
 
     try do
-      case ActionQueries.get_next_action_batch(state.queue_id, state.max_throughput, exclude_ids) do
-        {:ok, []} when map_size(in_flight) == 0 ->
+      case ActionQueries.get_next_action_batch(state.queue_id, state.max_throughput, []) do
+        {:ok, []} ->
           idle_since = state.idle_since || now
 
           if now - idle_since >= @idle_timeout_ms do
@@ -121,23 +129,32 @@ defmodule Throttle.QueueRunner do
           else
             timer_ref = Process.send_after(self(), :tick, state.delay_ms)
 
-            {:noreply,
-             %{state | timer_ref: timer_ref, in_flight: in_flight, idle_since: idle_since}}
+            {:noreply, %{state | timer_ref: timer_ref, idle_since: idle_since}}
           end
-
-        {:ok, []} ->
-          timer_ref = Process.send_after(self(), :tick, state.delay_ms)
-          {:noreply, %{state | timer_ref: timer_ref, in_flight: in_flight, idle_since: nil}}
 
         {:ok, executions} ->
           new_entries = Map.new(executions, fn e -> {e.id, now} end)
-          updated_in_flight = Map.merge(in_flight, new_entries)
-
-          process_executions(executions)
           timer_ref = Process.send_after(self(), :tick, state.delay_ms)
 
-          {:noreply,
-           %{state | timer_ref: timer_ref, in_flight: updated_in_flight, idle_since: nil}}
+          case process_executions(executions) do
+            {:ok, portal_pid} ->
+              monitored_state = monitor_portal(state, portal_pid)
+
+              {:noreply,
+               %{
+                 monitored_state
+                 | timer_ref: timer_ref,
+                   in_flight: new_entries,
+                   idle_since: nil
+               }}
+
+            {:error, reason} ->
+              Logger.error(
+                "QueueRunner #{state.queue_id} could not enqueue claimed actions: #{inspect(reason)}"
+              )
+
+              {:noreply, %{state | timer_ref: timer_ref, idle_since: nil}}
+          end
 
         {:error, reason} ->
           Logger.error(
@@ -145,15 +162,46 @@ defmodule Throttle.QueueRunner do
           )
 
           timer_ref = Process.send_after(self(), :tick, state.delay_ms)
-          {:noreply, %{state | timer_ref: timer_ref, in_flight: in_flight}}
+          {:noreply, %{state | timer_ref: timer_ref}}
       end
     rescue
       e ->
         Logger.error("QueueRunner #{state.queue_id} tick error: #{Exception.message(e)}")
 
         timer_ref = Process.send_after(self(), :tick, state.delay_ms)
-        {:noreply, %{state | timer_ref: timer_ref, in_flight: in_flight}}
+        {:noreply, %{state | timer_ref: timer_ref}}
     end
+  end
+
+  def handle_info({:portal_delivery_complete, action_ids}, state) when is_list(action_ids) do
+    completed = Map.take(state.in_flight, action_ids)
+    remaining = Map.drop(state.in_flight, action_ids)
+
+    if map_size(completed) > 0 and map_size(remaining) == 0 do
+      if state.timer_ref do
+        Process.cancel_timer(state.timer_ref)
+      end
+
+      started_at = completed |> Map.values() |> Enum.min()
+      elapsed_ms = System.monotonic_time(:millisecond) - started_at
+      next_tick_ms = max(state.delay_ms - elapsed_ms, 0)
+      timer_ref = Process.send_after(self(), :tick, next_tick_ms)
+
+      {:noreply, %{state | in_flight: remaining, timer_ref: timer_ref}}
+    else
+      {:noreply, %{state | in_flight: remaining}}
+    end
+  end
+
+  def handle_info({:DOWN, ref, :process, pid, reason}, %{portal_monitor_ref: ref} = state) do
+    Logger.error(
+      "PortalQueue #{inspect(pid)} for #{state.queue_id} exited while a batch was in flight: #{inspect(reason)}"
+    )
+
+    # The database lease remains authoritative. Clearing only the local map
+    # allows the row to become claimable after that lease expires.
+    {:noreply,
+     %{state | in_flight: %{}, portal_pid: nil, portal_monitor_ref: nil, idle_since: nil}}
   end
 
   def terminate(reason, state) do
@@ -168,22 +216,33 @@ defmodule Throttle.QueueRunner do
   defp process_executions(executions) do
     executions_by_portal = Enum.group_by(executions, &extract_portal_id/1)
 
-    Enum.each(executions_by_portal, fn {portal_id, portal_executions} ->
-      ensure_portal_queue(portal_id)
-      Throttle.PortalQueue.enqueue_executions(portal_id, portal_executions)
+    Enum.reduce_while(executions_by_portal, {:error, :no_portal}, fn
+      {portal_id, portal_executions}, _acc ->
+        case ensure_portal_queue(portal_id) do
+          {:ok, pid} ->
+            Throttle.PortalQueue.enqueue_executions(portal_id, portal_executions, self())
+            {:cont, {:ok, pid}}
+
+          {:error, reason} ->
+            {:halt, {:error, reason}}
+        end
     end)
   end
 
   defp ensure_portal_queue(portal_id) do
     case Registry.lookup(Throttle.PortalRegistry, portal_id) do
       [] ->
-        DynamicSupervisor.start_child(
-          Throttle.PortalQueueSupervisor,
-          {Throttle.PortalQueue, portal_id}
-        )
+        case DynamicSupervisor.start_child(
+               Throttle.PortalQueueSupervisor,
+               {Throttle.PortalQueue, portal_id}
+             ) do
+          {:ok, pid} -> {:ok, pid}
+          {:error, {:already_started, pid}} -> {:ok, pid}
+          {:error, reason} -> {:error, reason}
+        end
 
-      _ ->
-        :ok
+      [{pid, _}] ->
+        {:ok, pid}
     end
   end
 
@@ -200,8 +259,14 @@ defmodule Throttle.QueueRunner do
     end
   end
 
-  defp prune_expired(in_flight, now) do
-    Map.filter(in_flight, fn {_id, ts} -> now - ts < @in_flight_expiry_ms end)
+  defp monitor_portal(%{portal_pid: pid} = state, pid), do: state
+
+  defp monitor_portal(state, pid) do
+    if state.portal_monitor_ref do
+      Process.demonitor(state.portal_monitor_ref, [:flush])
+    end
+
+    %{state | portal_pid: pid, portal_monitor_ref: Process.monitor(pid)}
   end
 
   defp apply_config(state, config) do

@@ -24,10 +24,12 @@ defmodule Throttle.PortalQueueTest do
         %ActionExecution{id: id, queue_id: "queue:#{portal_id}:1:1:0", callback_id: "cb-#{id}"}
       end)
 
-    PortalQueue.enqueue_executions(portal_id, executions)
+    PortalQueue.enqueue_executions(portal_id, executions, self())
     state = :sys.get_state(pid)
 
     assert :queue.len(state.queue) == 50
     assert is_reference(state.timer_ref)
+    assert_receive {:portal_delivery_complete, completed_ids}
+    assert Enum.sort(completed_ids) == Enum.to_list(1..100)
   end
 end
