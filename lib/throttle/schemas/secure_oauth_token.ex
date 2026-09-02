@@ -26,6 +26,7 @@ defmodule Throttle.Schemas.SecureOAuthToken do
     ])
     |> validate_required([:portal_id, :access_token, :refresh_token, :expires_at])
     |> unique_constraint(:portal_id)
+    |> encrypt_tokens()
   end
 
   def update_changeset(token, attrs) do
@@ -44,4 +45,12 @@ defmodule Throttle.Schemas.SecureOAuthToken do
         {:error, :decryption_failed}
     end
   end
+
+  defp encrypt_tokens(%Ecto.Changeset{valid?: true} = changeset) do
+    changeset
+    |> update_change(:access_token, &Throttle.Encryption.encrypt/1)
+    |> update_change(:refresh_token, &Throttle.Encryption.encrypt/1)
+  end
+
+  defp encrypt_tokens(changeset), do: changeset
 end
