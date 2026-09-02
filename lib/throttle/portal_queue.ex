@@ -7,6 +7,10 @@ defmodule Throttle.PortalQueue do
   @flush_interval 900
   @max_batch_size 100
   @max_queue_size 10_000
+  # Queued rows are leased for claim_lease_seconds (180s). Renew only the ones
+  # that have waited long enough to matter; a queue that drains quickly never
+  # touches the database for renewal at all.
+  @renew_after_ms 60_000
 
   ## Client API
 
@@ -14,7 +18,13 @@ defmodule Throttle.PortalQueue do
     GenServer.start_link(__MODULE__, portal_id, name: via_tuple(portal_id))
   end
 
-  def enqueue_executions(portal_id, executions, owner \\ nil) do
+  def enqueue_executions(server, executions, owner \\ nil)
+
+  def enqueue_executions(pid, executions, owner) when is_pid(pid) do
+    GenServer.cast(pid, {:enqueue, executions, owner})
+  end
+
+  def enqueue_executions(portal_id, executions, owner) do
     GenServer.cast(via_tuple(portal_id), {:enqueue, executions, owner})
   end
 
@@ -24,25 +34,21 @@ defmodule Throttle.PortalQueue do
     state = %{
       portal_id: portal_id,
       queue: :queue.new(),
-      timer_ref: nil
+      timer_ref: nil,
+      rate_limited_until: nil
     }
 
     {:ok, state}
   end
 
   def handle_cast({:enqueue, executions, owner}, state) do
-    items = Enum.map(executions, &{&1, owner})
+    now = System.monotonic_time(:millisecond)
+    items = Enum.map(executions, &{&1, owner, now})
     {:noreply, enqueue_batch(state, items)}
   end
 
   def handle_info(:flush, state) do
-    state = state |> flush_queue() |> Map.put(:timer_ref, nil) |> schedule_if_pending()
-    {:noreply, state}
-  end
-
-  def handle_info({:retry_batch, items}, state) do
-    dispatch_batch(state.portal_id, items)
-    {:noreply, schedule_if_pending(state)}
+    {:noreply, flush_now(%{state | timer_ref: nil})}
   end
 
   ## Helper Functions
@@ -51,31 +57,42 @@ defmodule Throttle.PortalQueue do
     {:via, Registry, {Throttle.PortalRegistry, portal_id}}
   end
 
-  defp maybe_schedule_flush(%{timer_ref: nil} = state) do
-    timer_ref = Process.send_after(self(), :flush, @flush_interval)
+  defp schedule_flush(state, delay_ms) do
+    if state.timer_ref, do: Process.cancel_timer(state.timer_ref)
+    timer_ref = Process.send_after(self(), :flush, max(delay_ms, 0))
     %{state | timer_ref: timer_ref}
+  end
+
+  defp maybe_schedule_flush(%{timer_ref: nil} = state) do
+    schedule_flush(state, @flush_interval)
   end
 
   defp maybe_schedule_flush(state), do: state
 
-  defp maybe_flush(state) do
-    if :queue.len(state.queue) >= @max_batch_size do
-      state = flush_queue(state)
-
-      if state.timer_ref do
-        Process.cancel_timer(state.timer_ref)
-      end
-
-      state
-      |> Map.put(:timer_ref, nil)
-      |> schedule_if_pending()
-    else
-      state
-    end
-  end
-
   defp schedule_if_pending(state) do
     if :queue.is_empty(state.queue), do: state, else: maybe_schedule_flush(state)
+  end
+
+  defp rate_limit_remaining_ms(%{rate_limited_until: nil}, _now), do: 0
+
+  defp rate_limit_remaining_ms(%{rate_limited_until: until}, now), do: max(until - now, 0)
+
+  # Flush unless a Retry-After window is open, in which case one flush is
+  # armed for when it closes. Rate-limited batches re-enter the queue, so a
+  # single paced flush loop drains them instead of several concurrent retries.
+  defp flush_now(state) do
+    now = System.monotonic_time(:millisecond)
+
+    case rate_limit_remaining_ms(state, now) do
+      0 ->
+        %{state | rate_limited_until: nil}
+        |> flush_queue()
+        |> Map.put(:timer_ref, nil)
+        |> schedule_if_pending()
+
+      remaining_ms ->
+        schedule_flush(state, remaining_ms)
+    end
   end
 
   defp enqueue_batch(state, items) do
@@ -91,34 +108,75 @@ defmodule Throttle.PortalQueue do
       notify_delivery_complete(items)
       state
     else
+      was_idle = current_len == 0 and is_nil(state.timer_ref)
+
       new_queue =
         Enum.reduce(items, state.queue, fn item, queue ->
           :queue.in(item, queue)
         end)
 
-      state
-      |> Map.put(:queue, new_queue)
-      |> maybe_schedule_flush()
-      |> maybe_flush()
+      state = %{state | queue: new_queue}
+
+      cond do
+        # An idle queue delivers immediately. QueueRunner waits for this batch
+        # before claiming the next one, so holding a lone batch for the full
+        # flush interval would cut every per-second queue's effective rate.
+        was_idle -> flush_now(state)
+        :queue.len(new_queue) >= @max_batch_size -> flush_now(state)
+        true -> maybe_schedule_flush(state)
+      end
     end
   end
 
   defp flush_queue(state) do
-    # A queued item must remain leased until PortalQueue has actually attempted
-    # delivery. Renewing the small, bounded portal queue prevents QueueRunner
-    # from reclaiming the same rows while they are waiting behind another batch.
-    state.queue
-    |> :queue.to_list()
-    |> action_ids()
-    |> ActionQueries.renew_claims()
-
+    now = System.monotonic_time(:millisecond)
+    state = %{state | queue: renew_stale_leases(state.queue, state.portal_id, now)}
     {batch, new_queue} = dequeue_batch(state.queue)
+    state = %{state | queue: new_queue}
 
     if batch != [] do
-      dispatch_batch(state.portal_id, batch)
+      dispatch_batch(state, batch)
+    else
+      state
     end
+  end
 
-    %{state | queue: new_queue}
+  # A queued item must remain leased until PortalQueue has actually attempted
+  # delivery. Only items that have waited @renew_after_ms are renewed, and a
+  # database error here is logged rather than allowed to crash the queue and
+  # drop every buffered batch for the portal.
+  defp renew_stale_leases(queue, portal_id, now) do
+    items = :queue.to_list(queue)
+
+    stale_ids =
+      for {execution, _owner, queued_at} <- items, now - queued_at >= @renew_after_ms do
+        execution.id
+      end
+
+    if stale_ids == [] do
+      queue
+    else
+      try do
+        ActionQueries.renew_claims(stale_ids)
+
+        items
+        |> Enum.map(fn
+          {execution, owner, queued_at} when now - queued_at >= @renew_after_ms ->
+            {execution, owner, now}
+
+          item ->
+            item
+        end)
+        |> :queue.from_list()
+      rescue
+        e ->
+          Logger.error(
+            "PortalQueue for portal #{portal_id} could not renew #{length(stale_ids)} leases: #{Exception.message(e)}"
+          )
+
+          queue
+      end
+    end
   end
 
   defp dequeue_batch(queue) do
@@ -141,30 +199,44 @@ defmodule Throttle.PortalQueue do
     end
   end
 
-  defp dispatch_batch(portal_id, items) do
+  defp dispatch_batch(state, items) do
     executions = Enum.map(items, &elem(&1, 0))
     processable_ids = executions |> action_ids() |> ActionQueries.processable_action_ids()
 
     {processable_items, stale_items} =
-      Enum.split_with(items, fn {execution, _owner} ->
+      Enum.split_with(items, fn {execution, _owner, _queued_at} ->
         MapSet.member?(processable_ids, execution.id)
       end)
 
     notify_delivery_complete(stale_items)
 
-    if processable_items != [] do
-      processable_items
-      |> action_ids()
-      |> ActionQueries.renew_claims()
-
-      case send_batch(portal_id, Enum.map(processable_items, &elem(&1, 0))) do
+    if processable_items == [] do
+      state
+    else
+      case send_batch(state.portal_id, Enum.map(processable_items, &elem(&1, 0))) do
         :done ->
           notify_delivery_complete(processable_items)
+          state
 
         {:retry, retry_after} ->
-          Process.send_after(self(), {:retry_batch, processable_items}, retry_after * 1_000)
+          requeue_rate_limited(state, processable_items, retry_after)
       end
     end
+  end
+
+  # Put the batch back at the head of the queue and hold every flush until the
+  # Retry-After window closes. The rows were already deferred in the database.
+  defp requeue_rate_limited(state, items, retry_after) do
+    now = System.monotonic_time(:millisecond)
+    retry_ms = retry_after * 1_000
+    refreshed = Enum.map(items, fn {execution, owner, _queued_at} -> {execution, owner, now} end)
+
+    %{
+      state
+      | queue: :queue.join(:queue.from_list(refreshed), state.queue),
+        rate_limited_until: now + retry_ms
+    }
+    |> schedule_flush(retry_ms)
   end
 
   defp send_batch(portal_id, executions) do
@@ -202,6 +274,11 @@ defmodule Throttle.PortalQueue do
 
     case OAuthManager.force_refresh_token(portal_id) do
       {:ok, new_token} ->
+        # The first attempt may have consumed most of the lease through HTTP
+        # retries. Renew before the second full send so another instance
+        # cannot claim these rows mid-delivery.
+        ActionQueries.renew_claims(action_ids)
+
         handle_delivery_result(
           process_with_token(executions, new_token),
           portal_id,
@@ -249,14 +326,14 @@ defmodule Throttle.PortalQueue do
 
   defp action_ids(items) do
     Enum.map(items, fn
-      {%{id: id}, _owner} -> id
+      {%{id: id}, _owner, _queued_at} -> id
       %{id: id} -> id
     end)
   end
 
   defp notify_delivery_complete(items) do
     items
-    |> Enum.group_by(fn {_execution, owner} -> owner end, fn {execution, _owner} ->
+    |> Enum.group_by(fn {_execution, owner, _queued_at} -> owner end, fn {execution, _owner, _} ->
       execution.id
     end)
     |> Enum.each(fn

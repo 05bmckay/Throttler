@@ -111,14 +111,19 @@ defmodule Throttle.HubSpotClient do
     end
   end
 
-  # Extract Retry-After header value from response headers
+  # Longest Retry-After honoured. PortalQueue holds every flush for this long,
+  # so an unbounded (or negative) header must never reach the timer.
+  @max_retry_after_seconds 3_600
+
+  # Extract Retry-After header value from response headers, clamped to
+  # [0, @max_retry_after_seconds]. Unparseable or negative values yield nil so
+  # the caller falls back to its default.
   defp extract_retry_after(headers) do
     headers
     |> Enum.find_value(fn {name, value} ->
       if String.downcase(name) == "retry-after" do
-        case Integer.parse(value) do
-          {int, ""} -> int
-          :error -> nil
+        case Integer.parse(String.trim(value)) do
+          {int, ""} when int >= 0 -> min(int, @max_retry_after_seconds)
           _ -> nil
         end
       else
