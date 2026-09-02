@@ -48,10 +48,19 @@ defmodule Throttle.OAuthManager do
 
   defp fetch_token_details(access_token) do
     Logger.info("Fetching token details from HubSpot")
-    url = "#{@hubspot_base_url}/oauth/v1/access-tokens/#{access_token}"
-    headers = [{"Authorization", "Bearer #{access_token}"}]
+    url = "#{@hubspot_base_url}/oauth/2026-03/token/introspect"
 
-    request = Finch.build(:get, url, headers)
+    body =
+      URI.encode_query(%{
+        client_id: hubspot_client_id(),
+        client_secret: hubspot_client_secret(),
+        token: access_token,
+        token_type_hint: "access_token"
+      })
+
+    headers = [{"Content-Type", "application/x-www-form-urlencoded"}]
+
+    request = Finch.build(:post, url, headers, body)
 
     case Finch.request(request, Throttle.Finch, receive_timeout: 15_000, request_timeout: 30_000) do
       {:ok, %Finch.Response{status: 200, body: resp_body}} ->
@@ -76,7 +85,7 @@ defmodule Throttle.OAuthManager do
     end
   end
 
-  @hubspot_oauth_url "https://api.hubapi.com/oauth/v1/token"
+  @hubspot_oauth_url "https://api.hubapi.com/oauth/2026-03/token"
 
   def get_token(portal_id) do
     Logger.info("Getting token for portal: #{portal_id}")

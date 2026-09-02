@@ -7,7 +7,9 @@ defmodule ThrottleWeb.Endpoint do
   @session_options [
     store: :cookie,
     key: "_throttle_key",
-    signing_salt: "your_signing_salt"
+    signing_salt: "your_signing_salt",
+    same_site: "Lax",
+    secure: Application.compile_env(:throttle, :secure_session_cookie, false)
   ]
 
   # socket "/live", Phoenix.LiveView.Socket, websocket: [connect_info: [session: @session_options]]

@@ -7,6 +7,8 @@ config :throttle, ThrottleWeb.Endpoint,
   cache_static_manifest: "priv/static/cache_manifest.json",
   server: true
 
+config :throttle, secure_session_cookie: true
+
 config :logger,
   level: :info,
   handle_otp_reports: true,
