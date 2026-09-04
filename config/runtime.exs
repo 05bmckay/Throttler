@@ -1,17 +1,19 @@
 import Config
 
 if config_env() == :prod do
-  recovery_queues_per_run =
-    case Integer.parse(System.get_env("THROTTLE_RECOVERY_QUEUES_PER_RUN") || "1") do
-      {value, ""} when value > 0 -> value
-      _ -> raise "THROTTLE_RECOVERY_QUEUES_PER_RUN must be a positive integer"
+  required = fn name ->
+    case System.get_env(name) do
+      value when is_binary(value) and byte_size(value) > 0 -> value
+      _ -> raise "#{name} environment variable is not set"
     end
+  end
 
-  startup_recovery_queues =
-    case Integer.parse(System.get_env("THROTTLE_STARTUP_RECOVERY_QUEUES") || "4") do
-      {value, ""} when value > 0 -> value
-      _ -> raise "THROTTLE_STARTUP_RECOVERY_QUEUES must be a positive integer"
-    end
+  encryption_key = required.("ENCRYPTION_KEY")
+
+  case Base.decode64(encryption_key) do
+    {:ok, key} when byte_size(key) == 32 -> :ok
+    _ -> raise "ENCRYPTION_KEY must be base64 encoding of exactly 32 bytes"
+  end
 
   requested_pool_size =
     case Integer.parse(System.get_env("POOL_SIZE") || "20") do
@@ -25,11 +27,27 @@ if config_env() == :prod do
     System.get_env("DATABASE_URL") ||
       raise "DATABASE_URL environment variable is not set"
 
+  db_host = URI.parse(database_url).host || raise "DATABASE_URL must include a hostname"
+  tls_name = System.get_env("DATABASE_TLS_SERVER_NAME") || db_host
+
+  trust =
+    case System.get_env("DATABASE_CA_CERT_PATH") do
+      nil -> [cacerts: :public_key.cacerts_get()]
+      path -> [cacertfile: String.to_charlist(path)]
+    end
+
   config :throttle, Throttle.Repo,
     url: database_url,
     pool_size: pool_size,
-    ssl: true,
-    ssl_opts: [verify: :verify_none]
+    ssl:
+      trust ++
+        [
+          verify: :verify_peer,
+          server_name_indication: String.to_charlist(tls_name),
+          customize_hostname_check: [
+            match_fun: :public_key.pkix_verify_hostname_match_fun(:https)
+          ]
+        ]
 
   secret_key_base =
     System.get_env("SECRET_KEY_BASE") ||
@@ -45,14 +63,13 @@ if config_env() == :prod do
     server: true
 
   config :throttle,
-    hubspot_client_id: System.get_env("HUBSPOT_CLIENT_ID"),
-    hubspot_client_secret: System.get_env("HUBSPOT_CLIENT_SECRET"),
+    hubspot_client_id: required.("HUBSPOT_CLIENT_ID"),
+    hubspot_client_secret: required.("HUBSPOT_CLIENT_SECRET"),
     hubspot_redirect_uri: System.get_env("HUBSPOT_REDIRECT_URI"),
-    recovery_queues_per_run: recovery_queues_per_run,
-    startup_recovery_queues: startup_recovery_queues,
+    admission_enabled: System.get_env("THROTTLE_ADMISSION_ENABLED") == "true",
+    dispatch_enabled: System.get_env("THROTTLE_DISPATCH_ENABLED") == "true",
+    config_api_key: System.get_env("THROTTLE_CONFIG_API_KEY"),
     hubspot_block_expiration_duration:
       System.get_env("HUBSPOT_BLOCK_EXPIRATION_DURATION") || "P4W",
-    encryption_key:
-      System.get_env("ENCRYPTION_KEY") ||
-        raise("ENCRYPTION_KEY environment variable is not set")
+    encryption_key: encryption_key
 end

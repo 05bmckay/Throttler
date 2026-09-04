@@ -22,7 +22,7 @@ defmodule ThrottleWeb do
       use Phoenix.Controller, namespace: ThrottleWeb
 
       import Plug.Conn
-      import ThrottleWeb.Gettext
+      use Gettext, backend: ThrottleWeb.Gettext
       alias ThrottleWeb.Router.Helpers, as: Routes
     end
   end
@@ -53,7 +53,7 @@ defmodule ThrottleWeb do
   def channel do
     quote do
       use Phoenix.Channel
-      import ThrottleWeb.Gettext
+      use Gettext, backend: ThrottleWeb.Gettext
     end
   end
 
@@ -63,7 +63,7 @@ defmodule ThrottleWeb do
       import Phoenix.View
 
       import ThrottleWeb.ErrorHelpers
-      import ThrottleWeb.Gettext
+      use Gettext, backend: ThrottleWeb.Gettext
       alias ThrottleWeb.Router.Helpers, as: Routes
     end
   end

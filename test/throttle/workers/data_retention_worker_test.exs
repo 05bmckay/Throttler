@@ -8,7 +8,7 @@ defmodule Throttle.Workers.DataRetentionWorkerTest do
   test "deletes old processed and permanently failed rows but preserves active work" do
     old =
       NaiveDateTime.utc_now()
-      |> NaiveDateTime.add(-31 * 86_400, :second)
+      |> NaiveDateTime.add(-36 * 86_400, :second)
       |> NaiveDateTime.truncate(:second)
 
     recent = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)

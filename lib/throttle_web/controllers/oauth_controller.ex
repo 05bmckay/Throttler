@@ -80,7 +80,7 @@ defmodule ThrottleWeb.OAuthController do
 
     request = Finch.build(:post, @hubspot_token_url, headers, body)
 
-    case Finch.request(request, Throttle.Finch, receive_timeout: 15_000, request_timeout: 30_000) do
+    case Throttle.HTTP.request(request) do
       {:ok, %Finch.Response{status: 200, body: resp_body}} ->
         case Jason.decode(resp_body) do
           {:ok, decoded} -> {:ok, decoded}

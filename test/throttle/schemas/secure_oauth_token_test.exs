@@ -31,4 +31,31 @@ defmodule Throttle.Schemas.SecureOAuthTokenTest do
     assert is_nil(Ecto.Changeset.get_change(changeset, :access_token))
     assert is_nil(Ecto.Changeset.get_change(changeset, :refresh_token))
   end
+
+  test "initial and refreshed metadata never retain credentials or unknown nested data" do
+    metadata = %{
+      "hub_id" => 123,
+      "scopes" => ["automation"],
+      "access_token" => "fake-access",
+      "refresh_token" => "fake-refresh",
+      "extra" => %{"secret" => "fake"},
+      "user" => %{"token" => "fake"}
+    }
+
+    attrs = %{
+      portal_id: 123,
+      access_token: "fake-access",
+      refresh_token: "fake-refresh",
+      expires_at: DateTime.utc_now(),
+      token_response: metadata
+    }
+
+    for changeset <- [
+          SecureOAuthToken.changeset(%SecureOAuthToken{}, attrs),
+          SecureOAuthToken.update_changeset(%SecureOAuthToken{}, attrs)
+        ] do
+      assert Ecto.Changeset.get_change(changeset, :token_response) ==
+               %{"hub_id" => 123, "scopes" => ["automation"]}
+    end
+  end
 end

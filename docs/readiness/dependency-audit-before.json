@@ -1,0 +1,286 @@
+{
+  "ecosystem": "Hex",
+  "packages_checked": 51,
+  "findings": [
+    {
+      "name": "cowboy",
+      "version": "2.12.0",
+      "vulnerabilities": [
+        {
+          "id": "EEF-CVE-2026-65624",
+          "modified": "2026-07-30T18:22:11.004772Z"
+        },
+        {
+          "id": "EEF-CVE-2026-8466",
+          "modified": "2026-07-30T18:22:12.853909Z"
+        },
+        {
+          "id": "GHSA-jfc2-q6qh-g5x8",
+          "modified": "2026-05-19T20:26:06.334145Z"
+        },
+        {
+          "id": "GHSA-w4f7-4cxr-rv3c",
+          "modified": "2026-07-29T16:11:36.697661Z"
+        }
+      ]
+    },
+    {
+      "name": "cowlib",
+      "version": "2.13.0",
+      "vulnerabilities": [
+        {
+          "id": "EEF-CVE-2026-43966",
+          "modified": "2026-08-03T18:23:20.912547Z"
+        },
+        {
+          "id": "EEF-CVE-2026-43968",
+          "modified": "2026-07-30T18:22:09.203641Z"
+        },
+        {
+          "id": "EEF-CVE-2026-43969",
+          "modified": "2026-08-18T11:30:04.658300Z"
+        },
+        {
+          "id": "EEF-CVE-2026-43970",
+          "modified": "2026-07-30T18:22:10.470284Z"
+        },
+        {
+          "id": "EEF-CVE-2026-43971",
+          "modified": "2026-08-18T16:00:17.277959Z"
+        },
+        {
+          "id": "EEF-CVE-2026-59248",
+          "modified": "2026-07-30T18:22:03.583684Z"
+        },
+        {
+          "id": "EEF-CVE-2026-7790",
+          "modified": "2026-07-30T18:22:04.150548Z"
+        },
+        {
+          "id": "GHSA-32p9-57cr-4x65",
+          "modified": "2026-05-18T17:11:03.404309Z"
+        },
+        {
+          "id": "GHSA-84f2-rp86-235p",
+          "modified": "2026-05-19T20:26:01.036608Z"
+        },
+        {
+          "id": "GHSA-g2wm-735q-3f56",
+          "modified": "2026-06-08T20:31:01.091008Z"
+        },
+        {
+          "id": "GHSA-hv23-4qp7-8c8r",
+          "modified": "2026-06-08T20:31:01.105232Z"
+        }
+      ]
+    },
+    {
+      "name": "decimal",
+      "version": "2.1.1",
+      "vulnerabilities": [
+        {
+          "id": "EEF-CVE-2026-32686",
+          "modified": "2026-07-30T18:21:59.465477Z"
+        },
+        {
+          "id": "GHSA-rhv4-8758-jx7v",
+          "modified": "2026-08-05T12:45:47.358985Z"
+        }
+      ]
+    },
+    {
+      "name": "hackney",
+      "version": "1.20.1",
+      "vulnerabilities": [
+        {
+          "id": "EEF-CVE-2026-47069",
+          "modified": "2026-07-30T18:22:10.096244Z"
+        },
+        {
+          "id": "EEF-CVE-2026-47071",
+          "modified": "2026-07-30T18:22:00.681770Z"
+        },
+        {
+          "id": "EEF-CVE-2026-47075",
+          "modified": "2026-07-30T18:22:00.874489Z"
+        },
+        {
+          "id": "EEF-CVE-2026-47076",
+          "modified": "2026-07-30T18:22:09.935592Z"
+        },
+        {
+          "id": "GHSA-9fm9-hp7p-53mf",
+          "modified": "2026-02-03T03:05:21.255910Z"
+        },
+        {
+          "id": "GHSA-gp9c-pm5m-5cxr",
+          "modified": "2026-06-26T22:00:09.488268Z"
+        },
+        {
+          "id": "GHSA-j9wq-vxxc-94wf",
+          "modified": "2026-06-26T22:00:10.561300Z"
+        },
+        {
+          "id": "GHSA-mp55-p8c9-rfw2",
+          "modified": "2026-06-26T22:00:10.691062Z"
+        },
+        {
+          "id": "GHSA-pj7v-xfvx-wmjq",
+          "modified": "2026-06-26T22:00:10.982884Z"
+        },
+        {
+          "id": "GHSA-vq52-99r9-h5pw",
+          "modified": "2025-12-10T00:40:06.233307Z"
+        }
+      ]
+    },
+    {
+      "name": "hpax",
+      "version": "1.0.3",
+      "vulnerabilities": [
+        {
+          "id": "EEF-CVE-2026-58226",
+          "modified": "2026-07-30T18:22:03.167317Z"
+        }
+      ]
+    },
+    {
+      "name": "mint",
+      "version": "1.7.1",
+      "vulnerabilities": [
+        {
+          "id": "EEF-CVE-2026-48861",
+          "modified": "2026-07-30T18:22:01.594144Z"
+        },
+        {
+          "id": "EEF-CVE-2026-48862",
+          "modified": "2026-07-30T18:22:05.857579Z"
+        },
+        {
+          "id": "EEF-CVE-2026-49753",
+          "modified": "2026-07-30T18:22:05.999117Z"
+        },
+        {
+          "id": "EEF-CVE-2026-49754",
+          "modified": "2026-07-30T18:22:11.459757Z"
+        },
+        {
+          "id": "EEF-CVE-2026-56810",
+          "modified": "2026-07-30T18:22:02.826617Z"
+        },
+        {
+          "id": "EEF-CVE-2026-58229",
+          "modified": "2026-07-30T18:22:06.665153Z"
+        },
+        {
+          "id": "EEF-CVE-2026-59246",
+          "modified": "2026-07-30T18:22:03.450604Z"
+        },
+        {
+          "id": "EEF-CVE-2026-59249",
+          "modified": "2026-07-30T18:22:03.712236Z"
+        },
+        {
+          "id": "EEF-CVE-2026-82728",
+          "modified": "2026-09-04T14:55:36.499101Z"
+        },
+        {
+          "id": "GHSA-2p26-p43x-fhp8",
+          "modified": "2026-07-09T23:30:10.359407Z"
+        },
+        {
+          "id": "GHSA-2pg6-44cx-c49v",
+          "modified": "2026-07-09T23:30:10.333707Z"
+        },
+        {
+          "id": "GHSA-g586-ccqf-7x4r",
+          "modified": "2026-07-09T23:30:09.074431Z"
+        },
+        {
+          "id": "GHSA-mjqx-c6f6-7rc2",
+          "modified": "2026-07-09T23:30:10.132597Z"
+        }
+      ]
+    },
+    {
+      "name": "phoenix",
+      "version": "1.6.16",
+      "vulnerabilities": [
+        {
+          "id": "EEF-CVE-2026-56811",
+          "modified": "2026-07-30T18:22:11.588056Z"
+        },
+        {
+          "id": "EEF-CVE-2026-56812",
+          "modified": "2026-07-30T18:22:04.456425Z"
+        },
+        {
+          "id": "GHSA-63mc-hw7g-86rr",
+          "modified": "2026-09-03T20:45:04.985092Z"
+        },
+        {
+          "id": "GHSA-6983-jfq8-485w",
+          "modified": "2026-09-03T20:45:04.969699Z"
+        }
+      ]
+    },
+    {
+      "name": "plug",
+      "version": "1.16.1",
+      "vulnerabilities": [
+        {
+          "id": "EEF-CVE-2026-54892",
+          "modified": "2026-07-30T18:22:02.525222Z"
+        },
+        {
+          "id": "EEF-CVE-2026-56813",
+          "modified": "2026-07-30T18:22:03.002405Z"
+        },
+        {
+          "id": "EEF-CVE-2026-56814",
+          "modified": "2026-07-30T18:22:07.177198Z"
+        },
+        {
+          "id": "EEF-CVE-2026-8468",
+          "modified": "2026-07-30T18:22:03.874188Z"
+        },
+        {
+          "id": "GHSA-468c-vq7p-gh64",
+          "modified": "2026-05-20T15:48:07.798538Z"
+        }
+      ]
+    },
+    {
+      "name": "plug_cowboy",
+      "version": "2.7.2",
+      "vulnerabilities": [
+        {
+          "id": "EEF-CVE-2026-32688",
+          "modified": "2026-07-30T18:22:09.498914Z"
+        },
+        {
+          "id": "GHSA-q8x4-x7mp-5vg2",
+          "modified": "2026-05-05T22:14:10.498322Z"
+        }
+      ]
+    },
+    {
+      "name": "postgrex",
+      "version": "0.19.1",
+      "vulnerabilities": [
+        {
+          "id": "EEF-CVE-2026-32687",
+          "modified": "2026-07-30T18:22:12.010848Z"
+        },
+        {
+          "id": "EEF-CVE-2026-58225",
+          "modified": "2026-07-30T18:22:05.589359Z"
+        },
+        {
+          "id": "GHSA-r73h-97w8-m54h",
+          "modified": "2026-05-18T18:04:55.880624Z"
+        }
+      ]
+    }
+  ]
+}

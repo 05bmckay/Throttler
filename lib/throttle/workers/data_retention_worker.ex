@@ -1,7 +1,7 @@
 defmodule Throttle.Workers.DataRetentionWorker do
   @moduledoc """
   Periodically deletes old terminal action_executions to prevent unbounded table growth.
-  Runs daily via Oban cron, deleting processed or permanently failed records older than 30 days.
+  Runs daily via Oban cron, deleting processed or permanently failed records older than 35 days.
   """
   use Oban.Worker, queue: :maintenance, max_attempts: 3
 
@@ -12,7 +12,7 @@ defmodule Throttle.Workers.DataRetentionWorker do
   alias Throttle.Schemas.ActionExecution
 
   @batch_size 1000
-  @retention_days 30
+  @retention_days 35
   @max_iterations 500
 
   @impl Oban.Worker
@@ -41,6 +41,10 @@ defmodule Throttle.Workers.DataRetentionWorker do
         where:
           (ae.processed == true or ae.permanently_failed == true) and
             ae.inserted_at < ^cutoff_date,
+        where: is_nil(ae.completed_at) or ae.completed_at < ^cutoff_date,
+        where:
+          is_nil(ae.expires_at) or
+            ae.expires_at < ^DateTime.add(DateTime.utc_now(), -7 * 86400, :second),
         select: ae.id,
         limit: @batch_size
       )

@@ -7,17 +7,13 @@ config :throttle,
   # throttler has not completed them. Four weeks is an explicit, configurable
   # safety window; queue-size validation is still required for extreme rates.
   hubspot_block_expiration_duration: "P4W",
-  startup_recovery_queues: 4,
-  # Recovery is deliberately ramped. JobCleaner starts at most this many
-  # missing queue runners per five-minute cron tick.
-  recovery_queues_per_run: 1
+  dispatch_enabled: false
 
 # Configures the endpoint
 config :throttle, ThrottleWeb.Endpoint,
   url: [host: "localhost"],
   render_errors: [view: ThrottleWeb.ErrorView, accepts: ~w(json), layout: false],
-  pubsub_server: Throttle.PubSub,
-  live_view: [signing_salt: "t8Kx9RzP"]
+  pubsub_server: Throttle.PubSub
 
 # Configures Elixir's Logger
 config :logger,
@@ -29,8 +25,6 @@ config :logger, :console,
 
 # Use Jason for JSON parsing in Phoenix
 config :phoenix, :json_library, Jason
-
-import_config "#{config_env()}.exs"
 
 config :throttle, Oban,
   repo: Throttle.Repo,
@@ -45,3 +39,5 @@ config :throttle, Oban,
      ]}
   ],
   queues: [default: 10, rate_limited: 1, maintenance: 1]
+
+import_config "#{config_env()}.exs"

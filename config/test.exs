@@ -22,6 +22,7 @@ config :throttle, Oban,
 config :throttle,
   env: :test,
   hubspot_client_secret: "test-client-secret",
+  hubspot_client_id: "test-client-id",
   hubspot_block_expiration_duration: "P4W",
   startup_recovery_queues: 0,
   encryption_key: Base.encode64(:binary.copy(<<1>>, 32))

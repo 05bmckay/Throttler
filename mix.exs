@@ -5,9 +5,8 @@ defmodule Throttle.MixProject do
     [
       app: :throttle,
       version: "0.1.0",
-      elixir: "~> 1.12",
+      elixir: "~> 1.18",
       elixirc_paths: elixirc_paths(Mix.env()),
-      compilers: [:phoenix] ++ Mix.compilers(),
       start_permanent: Mix.env() == :prod,
       aliases: aliases(),
       deps: deps()
@@ -26,25 +25,20 @@ defmodule Throttle.MixProject do
 
   defp deps do
     [
-      {:phoenix, "~> 1.6.0"},
+      {:phoenix, "~> 1.7.24"},
+      {:phoenix_view, "~> 2.0"},
       {:phoenix_ecto, "~> 4.4"},
       {:ecto_sql, "~> 3.6"},
       {:postgrex, ">= 0.0.0"},
-      {:phoenix_html, "~> 3.0"},
       {:phoenix_live_reload, "~> 1.2", only: :dev},
-      {:phoenix_live_view, "~> 0.16.0"},
-      {:floki, ">= 0.30.0", only: :test},
-      {:phoenix_live_dashboard, "~> 0.5"},
       {:telemetry_metrics, "~> 0.6"},
       {:telemetry_poller, "~> 1.0"},
       {:gettext, "~> 0.18"},
       {:jason, "~> 1.2"},
       {:plug_cowboy, "~> 2.5"},
       {:oban, "~> 2.10"},
-      {:appsignal_phoenix, "~> 2.3.9"},
+      {:appsignal_phoenix, "~> 2.8"},
       {:finch, "~> 0.19"},
-      {:hackney, "~> 1.8"},
-      {:httpoison, "~> 1.8"},
       {:ex_doc, "~> 0.24", only: :dev, runtime: false}
     ]
   end

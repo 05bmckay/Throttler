@@ -1,175 +1,69 @@
 defmodule Throttle.ActionQueriesTest do
+  # Claim/config/expiration scenarios retained against the new database API.
   use Throttle.DataCase
-
-  alias Throttle.ActionQueries
-  alias Throttle.Repo
+  import Throttle.DispatchFixtures
+  alias Throttle.{DispatchStore, Repo}
   alias Throttle.Schemas.ActionExecution
 
-  test "successful callback completion clears every duplicate row" do
-    now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
-
-    rows =
-      Enum.map(1..2, fn id ->
-        %{
-          queue_id: "queue:1:2:3:0",
-          callback_id: "duplicate-callback",
-          processed: false,
-          max_throughput: "3",
-          time: "1",
-          period: "seconds",
-          last_failure_reason: "in_flight_#{id}",
-          consecutive_failures: id,
-          total_attempts: id,
-          permanently_failed: false,
-          inserted_at: now,
-          updated_at: now
-        }
-      end)
-
-    assert {2, nil} = Repo.insert_all(ActionExecution, rows)
-
-    ActionQueries.mark_callbacks_processed_and_clear_errors(["duplicate-callback"])
-
-    assert [first, second] = Repo.all(ActionExecution)
-
-    for execution <- [first, second] do
-      assert execution.processed
-      assert is_nil(execution.last_failure_reason)
-      assert execution.consecutive_failures == 0
-    end
+  test "callback uniqueness prevents duplicate rows before they can be dispatched" do
+    first = admit("unique")
+    assert admit("unique").id == first.id
+    {:ok, batch} = DispatchStore.claim(901)
+    DispatchStore.finish(batch, :ok)
+    assert admit("unique").processed
   end
 
-  test "claims are leased atomically so another runner cannot select the same row" do
-    now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
-
-    rows = [
-      execution_attrs("callback-1", now),
-      execution_attrs("callback-2", NaiveDateTime.add(now, 1, :second))
-    ]
-
-    assert {2, nil} = Repo.insert_all(ActionExecution, rows)
-
-    assert {:ok, [%ActionExecution{callback_id: "callback-1", id: first_id}]} =
-             ActionQueries.get_next_action_batch("queue:claim:test:0", "1")
-
-    assert {:ok, [%ActionExecution{callback_id: "callback-2"}]} =
-             ActionQueries.get_next_action_batch("queue:claim:test:0", "1")
-
-    claimed = Repo.get!(ActionExecution, first_id)
-    assert claimed.last_failure_reason == "in_flight"
-    assert %DateTime{} = claimed.on_hold_until
-    assert DateTime.diff(claimed.on_hold_until, DateTime.utc_now(), :second) >= 179
+  test "claims are leased atomically so another instance cannot select the portal" do
+    admit("a")
+    admit("b")
+    {:ok, batch} = DispatchStore.claim(901)
+    assert length(batch.actions) == 2
+    assert {:ok, nil} = DispatchStore.claim(901)
+    assert Enum.all?(DispatchStore.owned_actions(batch), &(&1.claim_token == batch.token))
   end
 
-  test "queued claims can renew their lease without reviving terminal work" do
-    now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
+  test "terminal rows cannot be revived by an old claim completion" do
+    action = admit("terminal")
+    {:ok, batch} = DispatchStore.claim(901)
+    DispatchStore.finish(batch, {:permanent, "invalid_callback"})
+    assert {:error, :stale_claim} = DispatchStore.finish(batch, :ok)
+    terminal = Repo.get!(ActionExecution, action.id)
+    assert terminal.permanently_failed and not terminal.processed
+  end
 
-    rows = [
-      execution_attrs("renew-active", now),
-      execution_attrs("renew-processed", now) |> Map.put(:processed, true),
-      execution_attrs("renew-failed", now) |> Map.put(:permanently_failed, true)
-    ]
+  test "dispatch eligibility excludes processed failed and expired rows" do
+    for cb <- ["processed", "failed", "expired", "valid"], do: admit(cb, %{max_throughput: "4"})
+    {:ok, batch} = DispatchStore.claim(901)
 
-    assert {3, nil} = Repo.insert_all(ActionExecution, rows)
-    active = Repo.get_by!(ActionExecution, callback_id: "renew-active")
-
-    from(a in ActionExecution, where: a.id == ^active.id)
-    |> Repo.update_all(
-      set: [
-        last_failure_reason: "in_flight",
-        on_hold_until: DateTime.add(DateTime.utc_now(), 1, :second)
-      ]
+    Repo.update_all(from(a in ActionExecution, where: a.callback_id == "processed"),
+      set: [processed: true]
     )
 
-    assert {1, nil} = ActionQueries.renew_claims(Enum.map(Repo.all(ActionExecution), & &1.id))
+    Repo.update_all(from(a in ActionExecution, where: a.callback_id == "failed"),
+      set: [permanently_failed: true]
+    )
 
-    renewed = Repo.reload!(active)
-    assert renewed.last_failure_reason == "in_flight"
-    assert DateTime.diff(renewed.on_hold_until, DateTime.utc_now(), :second) >= 179
+    Repo.update_all(from(a in ActionExecution, where: a.callback_id == "expired"),
+      set: [expires_at: DateTime.utc_now() |> DateTime.add(-1) |> DateTime.truncate(:second)]
+    )
+
+    assert Enum.map(DispatchStore.owned_actions(batch), & &1.callback_id) == ["valid"]
   end
 
-  test "processable action IDs exclude completed, failed, and expired rows" do
-    now_utc = DateTime.utc_now() |> DateTime.truncate(:second)
-    now = DateTime.to_naive(now_utc)
-
-    rows = [
-      execution_attrs("processable", now),
-      execution_attrs("already-processed", now) |> Map.put(:processed, true),
-      execution_attrs("terminal", now) |> Map.put(:permanently_failed, true),
-      execution_attrs("expired-before-send", now)
-      |> Map.put(:expires_at, DateTime.add(now_utc, -1, :second))
-    ]
-
-    assert {4, nil} = Repo.insert_all(ActionExecution, rows)
-    executions = Repo.all(ActionExecution)
-    ids = Enum.map(executions, & &1.id)
-
-    processable_ids = ActionQueries.processable_action_ids(ids)
-    expected_id = Enum.find(executions, &(&1.callback_id == "processable")).id
-
-    assert processable_ids == MapSet.new([expected_id])
+  test "rate-limit holds remain effective under a non-UTC database session" do
+    Repo.query!("SET LOCAL TIME ZONE 'America/Chicago'")
+    admit("rate-limited")
+    {:ok, batch} = DispatchStore.claim(901)
+    DispatchStore.finish(batch, {:rate_limited, 60})
+    assert DispatchStore.ready_portals(16) == []
+    row = Repo.get!(ActionExecution, hd(batch.actions).id)
+    assert DateTime.diff(row.on_hold_until, DateTime.utc_now()) in 59..60
   end
 
-  test "rate-limit deferral reserves callbacks through the retry processing window" do
-    now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
-    attrs = execution_attrs("rate-limited", now)
-
-    assert {1, nil} = Repo.insert_all(ActionExecution, [attrs])
-    execution = Repo.get_by!(ActionExecution, callback_id: "rate-limited")
-
-    assert {1, nil} = ActionQueries.defer_rate_limited_actions([execution.id], 60)
-
-    deferred = Repo.reload!(execution)
-    assert deferred.last_failure_reason == "rate_limited"
-    assert DateTime.diff(deferred.on_hold_until, DateTime.utc_now(), :second) >= 239
-
-    assert {1, nil} = ActionQueries.defer_rate_limited_actions([execution.id], 10)
-    assert Repo.reload!(execution).on_hold_until == deferred.on_hold_until
-  end
-
-  test "latest configuration wins and expired actions are made terminal" do
-    now_utc = DateTime.utc_now() |> DateTime.truncate(:second)
-    now = DateTime.to_naive(now_utc)
-
-    old =
-      execution_attrs("old-config", now)
-      |> Map.merge(%{max_throughput: "1", time: "1", period: "hours"})
-
-    latest =
-      execution_attrs("latest-config", NaiveDateTime.add(now, 1, :second))
-      |> Map.merge(%{max_throughput: "5", time: "2", period: "seconds"})
-
-    expired =
-      execution_attrs("expired", NaiveDateTime.add(now, 2, :second))
-      |> Map.put(:expires_at, DateTime.add(now_utc, -1, :second))
-
-    assert {3, nil} = Repo.insert_all(ActionExecution, [old, latest, expired])
-
-    assert {:ok, config} = ActionQueries.latest_queue_config("queue:claim:test:0")
-    assert %{max_throughput: "5", time: "2", period: "seconds"} = config
-
-    assert {1, nil} = ActionQueries.expire_overdue_actions()
-
-    expired_row = Repo.get_by!(ActionExecution, callback_id: "expired")
-    assert expired_row.permanently_failed
-    assert expired_row.last_failure_reason == "hubspot_block_expired"
-  end
-
-  defp execution_attrs(callback_id, inserted_at) do
-    %{
-      queue_id: "queue:claim:test:0",
-      callback_id: callback_id,
-      processed: false,
-      max_throughput: "1",
-      time: "1",
-      period: "seconds",
-      last_failure_reason: nil,
-      consecutive_failures: 0,
-      on_hold_until: nil,
-      total_attempts: 0,
-      permanently_failed: false,
-      inserted_at: inserted_at,
-      updated_at: inserted_at
-    }
+  test "latest configuration survives processing of its source action" do
+    admit("old", %{max_throughput: "1"})
+    newest = admit("new", %{max_throughput: "7"})
+    Repo.update_all(from(a in ActionExecution, where: a.id == ^newest.id), set: [processed: true])
+    assert %{rows: [[7]]} = Repo.query!("SELECT max_throughput FROM dispatch_queues")
   end
 end

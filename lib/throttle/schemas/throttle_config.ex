@@ -23,6 +23,11 @@ defmodule Throttle.Schemas.ThrottleConfig do
     config
     |> cast(attrs, [:portal_id, :action_id, :max_throughput, :time_period, :time_unit])
     |> validate_required([:portal_id, :action_id, :max_throughput, :time_period, :time_unit])
+    |> validate_number(:portal_id,
+      greater_than: 0,
+      less_than_or_equal_to: 9_223_372_036_854_775_807
+    )
+    |> validate_length(:action_id, max: 64)
     |> validate_inclusion(:time_unit, ~w(second seconds minute minutes hour hours day days))
     |> unique_constraint([:portal_id, :action_id])
   end

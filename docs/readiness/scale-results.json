@@ -1,0 +1,11 @@
+{
+  "rows": 7600000,
+  "pending_preserved": 42,
+  "before_database_bytes": 2621018927,
+  "after_database_bytes": 3347649327,
+  "migration_wal_upper_bound_bytes": 666221224,
+  "cumulative_temp_bytes": 2884536576,
+  "migration_seconds_approx": 82,
+  "timing_note": "Derived from query log timestamps 16:51:40.416 to 16:53:02.440, including 0.194 seconds of count verification. Exact timer was lost after a reporting-query codec error.",
+  "scope": "Local PostgreSQL 15; 7.6m synthetic rows and ten pre-cutover indexes; not production timing"
+}

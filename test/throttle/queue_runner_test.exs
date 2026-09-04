@@ -1,95 +1,81 @@
 defmodule Throttle.QueueRunnerTest do
+  # Old tick-chain/lifecycle coverage is retained as scheduler-slot and durable
+  # recovery coverage; per-queue timers no longer exist.
   use Throttle.DataCase
+  import Throttle.DispatchFixtures
+  alias Throttle.{Dispatcher, DispatchStore}
 
-  alias Throttle.QueueRunner
+  defp state do
+    {:ok, state} = Dispatcher.init([])
+    Process.cancel_timer(state.timer)
+    state
+  end
 
-  @lease_ms :timer.seconds(Throttle.ActionQueries.claim_lease_seconds())
+  test "delivery completion frees exactly one slot and stale messages are ignored" do
+    ref = make_ref()
+    timer = Process.send_after(self(), :unused, 60_000)
+    state = %{state() | tasks: %{ref => %{pid: self(), timer: timer}}}
+    assert {:noreply, finished} = Dispatcher.handle_info({ref, :ok}, state)
+    assert finished.tasks == %{}
+    assert {:noreply, ^finished} = Dispatcher.handle_info({ref, :ok}, finished)
+  end
 
-  defp state(overrides) do
-    Map.merge(
-      %{
-        queue_id: "queue:1:2:3:0",
-        config_id: 1,
-        max_throughput: "12",
-        time: "1",
-        period: "seconds",
-        delay_ms: 60_000,
-        timer_ref: nil,
-        tick_seq: 1,
-        in_flight: %{},
-        in_flight_since: nil,
-        lease_guard_until: nil,
-        portal_pid: nil,
-        portal_monitor_ref: nil,
-        idle_since: nil
-      },
-      overrides
+  test "crashed delivery frees local capacity without releasing its database lease" do
+    admit("crashed")
+    {:ok, batch} = DispatchStore.claim(901)
+    ref = make_ref()
+    timer = Process.send_after(self(), :unused, 60_000)
+    state = %{state() | tasks: %{ref => %{pid: self(), timer: timer}}}
+
+    assert {:noreply, finished} =
+             Dispatcher.handle_info({:DOWN, ref, :process, self(), :killed}, state)
+
+    assert finished.tasks == %{}
+    assert DispatchStore.owned_actions(batch) != []
+    assert {:ok, nil} = DispatchStore.claim(901)
+  end
+
+  test "expired claims recover after the owning task disappears" do
+    admit("recover")
+    {:ok, old} = DispatchStore.claim(901)
+
+    Throttle.Repo.query!(
+      "UPDATE dispatch_portals SET lease_until=timezone('UTC', now())-interval '1 second'"
     )
+
+    Throttle.Repo.update_all(Throttle.Schemas.ActionExecution,
+      set: [on_hold_until: DateTime.add(DateTime.utc_now(), -1)]
+    )
+
+    assert {:ok, replacement} = DispatchStore.claim(901)
+    assert replacement.token != old.token
+    assert {:error, :stale_claim} = DispatchStore.finish(old, :ok)
   end
 
-  defp cancel(state), do: Process.cancel_timer(state.timer_ref)
+  test "watchdog terminates the exact task and waits for DOWN before freeing its slot" do
+    task =
+      Task.Supervisor.async_nolink(Throttle.DeliverySupervisor, fn ->
+        receive do
+          :never -> :ok
+        end
+      end)
 
-  test "does not claim another batch while portal delivery is outstanding" do
-    now = System.monotonic_time(:millisecond)
-    state = state(%{in_flight: %{101 => now}, in_flight_since: now})
-
-    assert {:noreply, waiting_state} = QueueRunner.handle_info({:tick, 1}, state)
-    assert waiting_state.in_flight == state.in_flight
-    assert is_reference(waiting_state.timer_ref)
-    cancel(waiting_state)
-
-    assert {:noreply, acknowledged_state} =
-             QueueRunner.handle_info({:portal_delivery_complete, [101]}, waiting_state)
-
-    assert acknowledged_state.in_flight == %{}
-    assert acknowledged_state.in_flight_since == nil
-    assert is_reference(acknowledged_state.timer_ref)
-    cancel(acknowledged_state)
+    timer = Process.send_after(self(), :unused, 60_000)
+    state = %{state() | tasks: %{task.ref => %{pid: task.pid, timer: timer}}}
+    assert {:noreply, ^state} = Dispatcher.handle_info({:task_timeout, task.ref}, state)
+    ref = task.ref
+    assert_receive {:DOWN, ^ref, :process, _pid, _reason}
+    refute Process.alive?(task.pid)
+    Process.cancel_timer(timer)
   end
 
-  test "delivery completion supersedes the tick that was already armed" do
-    now = System.monotonic_time(:millisecond)
-    state = state(%{in_flight: %{101 => now}, in_flight_since: now})
-
-    assert {:noreply, waiting_state} = QueueRunner.handle_info({:tick, 1}, state)
-
-    assert {:noreply, acknowledged_state} =
-             QueueRunner.handle_info({:portal_delivery_complete, [101]}, waiting_state)
-
-    assert acknowledged_state.tick_seq > waiting_state.tick_seq
-    cancel(acknowledged_state)
-
-    # A tick armed before the reschedule is ignored instead of claiming.
-    assert {:noreply, same_state} =
-             QueueRunner.handle_info({:tick, waiting_state.tick_seq}, acknowledged_state)
-
-    assert same_state == acknowledged_state
-  end
-
-  test "an outstanding batch older than the lease no longer blocks claiming" do
-    now = System.monotonic_time(:millisecond)
-    stale = now - @lease_ms - 1
-    state = state(%{in_flight: %{101 => stale}, in_flight_since: stale})
-
-    assert {:noreply, released_state} = QueueRunner.handle_info({:tick, 1}, state)
-    assert released_state.in_flight == %{}
-    assert released_state.in_flight_since == nil
-    cancel(released_state)
-  end
-
-  test "stays alive through the lease window after a claim even when idle" do
-    now = System.monotonic_time(:millisecond)
-    guarded = state(%{idle_since: now - 60_000, lease_guard_until: now + @lease_ms})
-
-    assert {:noreply, guarded_state} = QueueRunner.handle_info({:tick, 1}, guarded)
-    cancel(guarded_state)
-
-    expired = state(%{idle_since: now - 60_000, lease_guard_until: now - 1})
-    assert {:stop, :normal, _state} = QueueRunner.handle_info({:tick, 1}, expired)
-  end
-
-  test "a superseded tick is dropped without side effects" do
-    state = state(%{tick_seq: 5})
-    assert {:noreply, ^state} = QueueRunner.handle_info({:tick, 4}, state)
+  test "a paused poll schedules one replacement timer without claiming work" do
+    admit("paused")
+    assert {:noreply, next} = Dispatcher.handle_info(:poll, state())
+    assert next.tasks == %{}
+    assert is_reference(next.timer)
+    Process.cancel_timer(next.timer)
+    assert {:ok, batch} = DispatchStore.claim(901)
+    assert batch != nil
   end
 end

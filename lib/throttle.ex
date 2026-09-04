@@ -7,40 +7,52 @@ defmodule Throttle do
   if it comes from the database, an external API or others.
   """
 
-  alias Throttle.{Repo, OAuthManager, QueueManager, ActionBatcher, ConfigCache}
+  alias Throttle.{Repo, OAuthManager, QueueManager, Admission}
   alias Throttle.Schemas.ThrottleConfig
   require Logger
 
   @doc """
-  Retrieves a throttle configuration, using the cache first.
+  Retrieves the persisted throttle configuration.
   Returns `{:ok, config}` or `{:error, :not_found}`.
   """
   def get_throttle_config(portal_id, action_id) do
-    ConfigCache.get_config(portal_id, action_id)
+    case Repo.get_by(ThrottleConfig, portal_id: portal_id, action_id: action_id) do
+      nil -> {:error, :not_found}
+      config -> {:ok, config}
+    end
   end
 
   @doc """
   Creates or updates a throttle configuration.
   """
   def upsert_throttle_config(attrs) do
-    result =
-      %ThrottleConfig{}
-      |> ThrottleConfig.changeset(attrs)
-      |> Repo.insert(
-        on_conflict: [
-          set: [
-            max_throughput: attrs.max_throughput,
-            time_period: attrs.time_period,
-            time_unit: attrs.time_unit
-          ]
-        ],
-        conflict_target: [:portal_id, :action_id]
-      )
+    changeset = ThrottleConfig.changeset(%ThrottleConfig{}, attrs)
 
-    case result do
-      {:ok, config} ->
-        ConfigCache.bust_cache(config.portal_id, config.action_id)
-        {:ok, config}
+    with {:ok, config} <- Ecto.Changeset.apply_action(changeset, :insert),
+         {:ok, rate} <-
+           Throttle.Rate.parse(config.max_throughput, config.time_period, config.time_unit) do
+      Repo.transaction(fn ->
+        {:ok, stored} =
+          Repo.insert(changeset,
+            on_conflict: {:replace, [:max_throughput, :time_period, :time_unit, :updated_at]},
+            conflict_target: [:portal_id, :action_id],
+            returning: true
+          )
+
+        Repo.query!(
+          """
+          UPDATE dispatch_queues SET max_throughput=$3, interval_ms=$4
+          WHERE portal_id=$1 AND split_part(queue_id, ':', 4)=$2
+          """,
+          [config.portal_id, config.action_id, rate.max_throughput, rate.interval_ms]
+        )
+
+        stored
+      end)
+    else
+      {:error, :invalid_rate} ->
+        {:error,
+         Ecto.Changeset.add_error(changeset, :max_throughput, "invalid or excessive rate")}
 
       error ->
         error
@@ -55,7 +67,7 @@ defmodule Throttle do
   end
 
   def create_action_execution(attrs) do
-    ActionBatcher.add_action(attrs)
+    Admission.admit(attrs)
   end
 
   @doc """

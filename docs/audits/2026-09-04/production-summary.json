@@ -1,0 +1,593 @@
+{
+  "cpu": [
+    {
+      "labels": [
+        {
+          "field": "resource",
+          "value": "dpg-cr1mb6o8fa8c73aadmg0-a"
+        }
+      ],
+      "first_timestamp": "2026-09-03T20:10:00Z",
+      "last_timestamp": "2026-09-04T20:10:00Z",
+      "samples": 289,
+      "min": 0.008401777,
+      "max": 0.09924235,
+      "mean": 0.013658425643598615,
+      "sum": null
+    },
+    {
+      "labels": [
+        {
+          "field": "service",
+          "value": "srv-crfmturv2p9s73ct2b3g"
+        },
+        {
+          "field": "resource",
+          "value": "srv-crfmturv2p9s73ct2b3g"
+        },
+        {
+          "field": "instance",
+          "value": "srv-crfmturv2p9s73ct2b3g-5wxvp"
+        }
+      ],
+      "first_timestamp": "2026-09-03T20:10:00Z",
+      "last_timestamp": "2026-09-04T20:10:00Z",
+      "samples": 289,
+      "min": 0.0056055,
+      "max": 0.41285202,
+      "mean": 0.020425420492733565,
+      "sum": null
+    }
+  ],
+  "cpu-limit": [
+    {
+      "labels": [
+        {
+          "field": "resource",
+          "value": "dpg-cr1mb6o8fa8c73aadmg0-a"
+        }
+      ],
+      "first_timestamp": "2026-09-03T20:10:00Z",
+      "last_timestamp": "2026-09-04T20:10:00Z",
+      "samples": 289,
+      "min": 1.0,
+      "max": 1.0,
+      "mean": 1.0,
+      "sum": null
+    },
+    {
+      "labels": [
+        {
+          "field": "service",
+          "value": "srv-crfmturv2p9s73ct2b3g"
+        },
+        {
+          "field": "resource",
+          "value": "srv-crfmturv2p9s73ct2b3g"
+        },
+        {
+          "field": "instance",
+          "value": "srv-crfmturv2p9s73ct2b3g-5wxvp"
+        }
+      ],
+      "first_timestamp": "2026-09-03T20:10:00Z",
+      "last_timestamp": "2026-09-04T20:10:00Z",
+      "samples": 289,
+      "min": 1.0,
+      "max": 1.0,
+      "mean": 1.0,
+      "sum": null
+    }
+  ],
+  "memory": [
+    {
+      "labels": [
+        {
+          "field": "resource",
+          "value": "dpg-cr1mb6o8fa8c73aadmg0-a"
+        }
+      ],
+      "first_timestamp": "2026-09-03T20:10:00Z",
+      "last_timestamp": "2026-09-04T20:10:00Z",
+      "samples": 289,
+      "min": 2001657900.0,
+      "max": 4052824000.0,
+      "mean": 3154594635.6401386,
+      "sum": null
+    },
+    {
+      "labels": [
+        {
+          "field": "service",
+          "value": "srv-crfmturv2p9s73ct2b3g"
+        },
+        {
+          "field": "resource",
+          "value": "srv-crfmturv2p9s73ct2b3g"
+        },
+        {
+          "field": "instance",
+          "value": "srv-crfmturv2p9s73ct2b3g-5wxvp"
+        }
+      ],
+      "first_timestamp": "2026-09-03T20:10:00Z",
+      "last_timestamp": "2026-09-04T20:10:00Z",
+      "samples": 289,
+      "min": 210550780.0,
+      "max": 246796290.0,
+      "mean": 219292229.1349481,
+      "sum": null
+    }
+  ],
+  "memory-limit": [
+    {
+      "labels": [
+        {
+          "field": "resource",
+          "value": "dpg-cr1mb6o8fa8c73aadmg0-a"
+        }
+      ],
+      "first_timestamp": "2026-09-03T20:10:00Z",
+      "last_timestamp": "2026-09-04T20:10:00Z",
+      "samples": 289,
+      "min": 4294967300.0,
+      "max": 4294967300.0,
+      "mean": 4294967300.0,
+      "sum": null
+    },
+    {
+      "labels": [
+        {
+          "field": "instance",
+          "value": "srv-crfmturv2p9s73ct2b3g-5wxvp"
+        },
+        {
+          "field": "service",
+          "value": "srv-crfmturv2p9s73ct2b3g"
+        },
+        {
+          "field": "resource",
+          "value": "srv-crfmturv2p9s73ct2b3g"
+        }
+      ],
+      "first_timestamp": "2026-09-03T20:10:00Z",
+      "last_timestamp": "2026-09-04T20:10:00Z",
+      "samples": 289,
+      "min": 2147483600.0,
+      "max": 2147483600.0,
+      "mean": 2147483600.0,
+      "sum": null
+    }
+  ],
+  "disk-usage": [
+    {
+      "labels": [
+        {
+          "field": "resource",
+          "value": "dpg-cr1mb6o8fa8c73aadmg0-a"
+        }
+      ],
+      "first_timestamp": "2026-09-03T20:10:00Z",
+      "last_timestamp": "2026-09-04T20:10:00Z",
+      "samples": 289,
+      "min": 3097235500.0,
+      "max": 3634335700.0,
+      "mean": 3180193840.484429,
+      "sum": null
+    }
+  ],
+  "http-requests": [
+    {
+      "labels": [
+        {
+          "field": "resource",
+          "value": "srv-crfmturv2p9s73ct2b3g"
+        },
+        {
+          "field": "statusCode",
+          "value": "200"
+        }
+      ],
+      "first_timestamp": "2026-09-03T20:10:00Z",
+      "last_timestamp": "2026-09-04T20:10:00Z",
+      "samples": 289,
+      "min": 0.0,
+      "max": 53176.0,
+      "mean": 1222.1557093425606,
+      "sum": 353203.0
+    },
+    {
+      "labels": [
+        {
+          "field": "resource",
+          "value": "srv-crfmturv2p9s73ct2b3g"
+        },
+        {
+          "field": "statusCode",
+          "value": "304"
+        }
+      ],
+      "first_timestamp": "2026-09-03T20:10:00Z",
+      "last_timestamp": "2026-09-04T20:10:00Z",
+      "samples": 273,
+      "min": 0.0,
+      "max": 1.0,
+      "mean": 0.02564102564102564,
+      "sum": 7.0
+    },
+    {
+      "labels": [
+        {
+          "field": "resource",
+          "value": "srv-crfmturv2p9s73ct2b3g"
+        },
+        {
+          "field": "statusCode",
+          "value": "400"
+        }
+      ],
+      "first_timestamp": "2026-09-04T09:35:00Z",
+      "last_timestamp": "2026-09-04T17:20:00Z",
+      "samples": 94,
+      "min": 0.0,
+      "max": 1.0,
+      "mean": 0.010638297872340425,
+      "sum": 1.0
+    },
+    {
+      "labels": [
+        {
+          "field": "statusCode",
+          "value": "404"
+        },
+        {
+          "field": "resource",
+          "value": "srv-crfmturv2p9s73ct2b3g"
+        }
+      ],
+      "first_timestamp": "2026-09-03T20:10:00Z",
+      "last_timestamp": "2026-09-04T20:10:00Z",
+      "samples": 275,
+      "min": 0.0,
+      "max": 14.0,
+      "mean": 0.15636363636363637,
+      "sum": 43.0
+    },
+    {
+      "labels": [
+        {
+          "field": "statusCode",
+          "value": "502"
+        },
+        {
+          "field": "resource",
+          "value": "srv-crfmturv2p9s73ct2b3g"
+        }
+      ],
+      "first_timestamp": "2026-09-03T20:10:00Z",
+      "last_timestamp": "2026-09-04T17:30:00Z",
+      "samples": 257,
+      "min": 0.0,
+      "max": 0.0,
+      "mean": 0.0,
+      "sum": 0.0
+    },
+    {
+      "labels": [
+        {
+          "field": "resource",
+          "value": "srv-crfmturv2p9s73ct2b3g"
+        },
+        {
+          "field": "statusCode",
+          "value": "503"
+        }
+      ],
+      "first_timestamp": "2026-09-03T20:10:00Z",
+      "last_timestamp": "2026-09-04T17:30:00Z",
+      "samples": 257,
+      "min": 0.0,
+      "max": 0.0,
+      "mean": 0.0,
+      "sum": 0.0
+    }
+  ],
+  "errors24h": {
+    "name": "errors24h",
+    "requested_start": "2026-09-03T20:13:42+00:00",
+    "end": "2026-09-04T20:13:42+00:00",
+    "count": 45,
+    "limit": 1000,
+    "first": "2026-09-03T20:39:30.417057232Z",
+    "last": "2026-09-04T18:44:17.378722619Z",
+    "patterns": [
+      [
+        "Process #PID<N.N.N> terminating",
+        44
+      ],
+      [
+        "HTTP error: socket closed",
+        1
+      ]
+    ],
+    "scanner_no_route_count": 0,
+    "exception_types": {},
+    "batches": {
+      "count": 0,
+      "actions": 0,
+      "mean": null,
+      "single_action": 0
+    },
+    "ack_latency_ms": {
+      "samples": 0,
+      "median": null,
+      "p95": null,
+      "max": null
+    }
+  },
+  "warnings24h": {
+    "name": "warnings24h",
+    "requested_start": "2026-09-03T20:13:42+00:00",
+    "end": "2026-09-04T20:13:42+00:00",
+    "count": 6,
+    "limit": 1000,
+    "first": "2026-09-04T00:27:18.860241851Z",
+    "last": "2026-09-04T10:34:39.622565586Z",
+    "patterns": [
+      [
+        "Rate limited by HubSpot API (N), retry after N seconds",
+        4
+      ],
+      [
+        "Error occurred: {:http_error, \"socket closed\"}, retrying (N retries left)",
+        1
+      ],
+      [
+        "Rate limited by HubSpot API, will snooze for 60s (N retries left)",
+        1
+      ]
+    ],
+    "scanner_no_route_count": 0,
+    "exception_types": {},
+    "batches": {
+      "count": 0,
+      "actions": 0,
+      "mean": null,
+      "single_action": 0
+    },
+    "ack_latency_ms": {
+      "samples": 0,
+      "median": null,
+      "p95": null,
+      "max": null
+    }
+  },
+  "recent15m": {
+    "name": "recent15m",
+    "requested_start": "2026-09-04T19:58:42+00:00",
+    "end": "2026-09-04T20:13:42+00:00",
+    "count": 811,
+    "limit": 1000,
+    "first": "2026-09-04T19:58:47.12625946Z",
+    "last": "2026-09-04T20:13:35.252556829Z",
+    "patterns": [
+      [
+        "POST /api/hubspot/action",
+        87
+      ],
+      [
+        "Inserted N actions",
+        64
+      ],
+      [
+        "Sending batch for portal N with N executions",
+        64
+      ],
+      [
+        "Getting token for portal: N",
+        64
+      ],
+      [
+        "Token found for portal: N",
+        64
+      ],
+      [
+        "Processing with token for portal: N",
+        64
+      ],
+      [
+        "Sending batch complete for N executions",
+        64
+      ],
+      [
+        "Token expiring soon check for portal N: false",
+        62
+      ],
+      [
+        "Token valid for portal: N",
+        62
+      ],
+      [
+        "Batch complete sent successfully for actions: [N]",
+        45
+      ],
+      [
+        "Batch complete sent successfully for actions: [N, N]",
+        16
+      ],
+      [
+        "QueueRunner queue:N:N:N:N idle for 10000ms, stopping.",
+        11
+      ],
+      [
+        "QueueRunner queue:N:N:N:N terminated: :normal",
+        11
+      ],
+      [
+        "QueueRunner started for queue:N:N:N:N (every 1000ms)",
+        6
+      ],
+      [
+        "QueueRunner started for queue:N:N:N:N (every 60000ms)",
+        4
+      ],
+      [
+        "QueueRunner started for queue:N:N:N:N (every 10000ms)",
+        4
+      ],
+      [
+        "{\"args\":{},\"id\":N,\"meta\":{\"cron\":true,\"cron_expr\":\"*/N * * * *\"},\"system_time\":N,\"max_attempts\":N,\"queue\":\"maintenance\",\"worker\":\"Throttle.Workers.JobCleaner\",\"source\":\"o",
+        3
+      ],
+      [
+        "Running JobCleaner...",
+        3
+      ]
+    ],
+    "scanner_no_route_count": 0,
+    "exception_types": {},
+    "batches": {
+      "count": 64,
+      "actions": 86,
+      "mean": 1.34375,
+      "single_action": 45
+    },
+    "ack_latency_ms": {
+      "samples": 87,
+      "median": 0.617,
+      "p95": 0.9,
+      "max": 10.0
+    }
+  },
+  "no_route24h": {
+    "name": "no_route24h",
+    "requested_start": "2026-09-03T20:14:49+00:00",
+    "end": "2026-09-04T20:14:49+00:00",
+    "count": 43,
+    "limit": 1000,
+    "first": "2026-09-03T20:39:30.417103193Z",
+    "last": "2026-09-04T18:44:17.37875346Z",
+    "patterns": [
+      [
+        "** (exit) {{{%Phoenix.Router.NoRouteError{plug_status: N, message: \"no route found for GET /sitemap.xml (ThrottleWeb.Router)\", conn: %Plug.Conn{adapter: {Plug.Cowboy.Conn",
+        12
+      ],
+      [
+        "** (exit) {{{%Phoenix.Router.NoRouteError{plug_status: N, message: \"no route found for GET /api/session/properties (ThrottleWeb.Router)\", conn: %Plug.Conn{adapter: {Plug.",
+        2
+      ],
+      [
+        "** (exit) {{{%Phoenix.Router.NoRouteError{plug_status: N, message: \"no route found for GET /.env (ThrottleWeb.Router)\", conn: %Plug.Conn{adapter: {Plug.Cowboy.Conn, :...}",
+        2
+      ],
+      [
+        "** (exit) {{{%Phoenix.Router.NoRouteError{plug_status: N, message: \"no route found for GET /.env.example (ThrottleWeb.Router)\", conn: %Plug.Conn{adapter: {Plug.Cowboy.Con",
+        1
+      ],
+      [
+        "** (exit) {{{%Phoenix.Router.NoRouteError{plug_status: N, message: \"no route found for GET /.env.old (ThrottleWeb.Router)\", conn: %Plug.Conn{adapter: {Plug.Cowboy.Conn, :",
+        1
+      ],
+      [
+        "** (exit) {{{%Phoenix.Router.NoRouteError{plug_status: N, message: \"no route found for GET /.env.backup (ThrottleWeb.Router)\", conn: %Plug.Conn{adapter: {Plug.Cowboy.Conn",
+        1
+      ],
+      [
+        "** (exit) {{{%Phoenix.Router.NoRouteError{plug_status: N, message: \"no route found for GET /.env.production (ThrottleWeb.Router)\", conn: %Plug.Conn{adapter: {Plug.Cowboy.",
+        1
+      ],
+      [
+        "** (exit) {{{%Phoenix.Router.NoRouteError{plug_status: N, message: \"no route found for GET /.env.prod (ThrottleWeb.Router)\", conn: %Plug.Conn{adapter: {Plug.Cowboy.Conn, ",
+        1
+      ],
+      [
+        "** (exit) {{{%Phoenix.Router.NoRouteError{plug_status: N, message: \"no route found for GET /.env.bak (ThrottleWeb.Router)\", conn: %Plug.Conn{adapter: {Plug.Cowboy.Conn, :",
+        1
+      ],
+      [
+        "** (exit) {{{%Phoenix.Router.NoRouteError{plug_status: N, message: \"no route found for GET /env (ThrottleWeb.Router)\", conn: %Plug.Conn{adapter: {Plug.Cowboy.Conn, :...},",
+        1
+      ],
+      [
+        "** (exit) {{{%Phoenix.Router.NoRouteError{plug_status: N, message: \"no route found for GET /.env.dev (ThrottleWeb.Router)\", conn: %Plug.Conn{adapter: {Plug.Cowboy.Conn, :",
+        1
+      ],
+      [
+        "** (exit) {{{%Phoenix.Router.NoRouteError{plug_status: N, message: \"no route found for GET /.env.local (ThrottleWeb.Router)\", conn: %Plug.Conn{adapter: {Plug.Cowboy.Conn,",
+        1
+      ],
+      [
+        "** (exit) {{{%Phoenix.Router.NoRouteError{plug_status: N, message: \"no route found for GET /_ignition/health-check (ThrottleWeb.Router)\", conn: %Plug.Conn{adapter: {Plug.",
+        1
+      ],
+      [
+        "** (exit) {{{%Phoenix.Router.NoRouteError{plug_status: N, message: \"no route found for GET /.env.save (ThrottleWeb.Router)\", conn: %Plug.Conn{adapter: {Plug.Cowboy.Conn, ",
+        1
+      ],
+      [
+        "** (exit) {{{%Phoenix.Router.NoRouteError{plug_status: N, message: \"no route found for GET /crusader-N-probe (ThrottleWeb.Router)\", conn: %Plug.Conn{adapter: {Plug.Cowboy",
+        1
+      ],
+      [
+        "** (exit) {{{%Phoenix.Router.NoRouteError{plug_status: N, message: \"no route found for GET /actuator/env (ThrottleWeb.Router)\", conn: %Plug.Conn{adapter: {Plug.Cowboy.Con",
+        1
+      ],
+      [
+        "** (exit) {{{%Phoenix.Router.NoRouteError{plug_status: N, message: \"no route found for GET /actuator/configprops (ThrottleWeb.Router)\", conn: %Plug.Conn{adapter: {Plug.Co",
+        1
+      ],
+      [
+        "** (exit) {{{%Phoenix.Router.NoRouteError{plug_status: N, message: \"no route found for GET /storage/logs/laravel.log (ThrottleWeb.Router)\", conn: %Plug.Conn{adapter: {Plu",
+        1
+      ]
+    ],
+    "scanner_no_route_count": 43,
+    "exception_types": {
+      "exit": 43
+    },
+    "batches": {
+      "count": 0,
+      "actions": 0,
+      "mean": null,
+      "single_action": 0
+    },
+    "ack_latency_ms": {
+      "samples": 0,
+      "median": null,
+      "p95": null,
+      "max": null
+    }
+  },
+  "database_snapshot": {
+    "observed_at": "2026-09-04T20:11:31Z",
+    "database_bytes": 3010206743,
+    "action_relation_bytes": 2999902208,
+    "action_index_bytes": 1631338496,
+    "action_heap_bytes": 1368154112,
+    "estimated_live_tuples": 7566569,
+    "estimated_dead_tuples": 974554,
+    "active_pending": 42,
+    "expired_active": 0,
+    "permanently_failed": 0,
+    "active_duplicate_callback_groups": 0,
+    "received_previous_hour": 1240,
+    "terminal_retention_eligible": 70250,
+    "connections": 29,
+    "blocked_sessions": 0,
+    "transactions_older_than_minute": 0,
+    "pg_stat_statements_reset": "2026-04-07T16:00:50Z",
+    "applied_migration_missing_from_checkout": 20240901233756,
+    "latest_applied_migration": 20260902150000,
+    "tokens_total": 34,
+    "metadata_access_token_key_count": 17,
+    "metadata_refresh_token_key_count": 17,
+    "token_values_read": false
+  },
+  "deployment": {
+    "commit": "1838519b61ac8ce5f540e2632513486b9890f4df",
+    "deployment_id": "dep-dac80pm10ojc73ehaos0",
+    "service_id": "srv-crfmturv2p9s73ct2b3g",
+    "instances": 1,
+    "health_check_path": ""
+  }
+}

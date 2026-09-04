@@ -1,15 +1,25 @@
 import Config
 
-# Configure your database
+# Local development defaults to a local database. Remote development databases
+# must present a trusted certificate; never disable peer verification.
+database_url =
+  System.get_env("DEV_DATABASE_URL") || "ecto://#{System.get_env("USER")}@localhost/throttle_dev"
+
+database_host = URI.parse(database_url).host
+
 config :throttle, Throttle.Repo,
-  url: System.get_env("DEV_DATABASE_URL"),
-  show_sensitive_data_on_connection_error: true,
+  url: database_url,
   pool_size: 5,
-  ssl: true,
-  ssl_opts: [
-    # TODO: Use verify: :verify_peer with cacerts: :public_key.cacerts_get() on OTP 25+
-    verify: :verify_none
-  ]
+  ssl:
+    if(database_host in ["localhost", "127.0.0.1"],
+      do: false,
+      else: [
+        verify: :verify_peer,
+        cacerts: :public_key.cacerts_get(),
+        server_name_indication: String.to_charlist(database_host),
+        customize_hostname_check: [match_fun: :public_key.pkix_verify_hostname_match_fun(:https)]
+      ]
+    )
 
 # For development, we disable any cache and enable
 # debugging and code reloading.

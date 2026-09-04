@@ -1,0 +1,5 @@
+[
+  {"id":"EEF-CVE-2026-43966","package":"cowlib","version":"2.19.0","requires":{"cowboy":"2.18.0"},"review_by":"2026-10-04","reason":"No application structured-header encoder calls; Cowboy 2.18 rejects CR/LF response headers by default. See SECURITY.md."},
+  {"id":"EEF-CVE-2026-43969","package":"cowlib","version":"2.19.0","requires":{"cowboy":"2.18.0"},"review_by":"2026-10-04","reason":"No cow_cookie:cookie/1 call sites in application or active HTTP clients; Finch/Mint sends no Cookie header. Signed server sessions use Set-Cookie encoding. See SECURITY.md."},
+  {"id":"EEF-CVE-2026-43971","package":"cowlib","version":"2.19.0","requires":{"cowboy":"2.18.0"},"review_by":"2026-10-04","reason":"No cow_link:link/1 call sites in application or active dependencies; application emits no Link headers. See SECURITY.md."}
+]

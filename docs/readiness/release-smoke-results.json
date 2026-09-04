@@ -1,0 +1,14 @@
+{
+  "premigration_paused_health": 503,
+  "paused_signed_webhook": 503,
+  "active_health": 200,
+  "unauthenticated_config": 401,
+  "unsigned_webhook": 401,
+  "paused_health": 503,
+  "verified_database_tls": true,
+  "untrusted_database_certificate_rejected": true,
+  "scope": "local production release; synthetic credentials; no HubSpot traffic",
+  "elixir": "1.19.5",
+  "otp": "28",
+  "postgres": "15"
+}

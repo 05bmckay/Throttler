@@ -12,8 +12,6 @@ defmodule ThrottleWeb.Endpoint do
     secure: Application.compile_env(:throttle, :secure_session_cookie, false)
   ]
 
-  # socket "/live", Phoenix.LiveView.Socket, websocket: [connect_info: [session: @session_options]]
-
   # Serve at "/" the static files from "priv/static" directory.
   #
   # You should set gzip to true if you are running phx.digest
@@ -33,7 +31,11 @@ defmodule ThrottleWeb.Endpoint do
   end
 
   plug(Plug.RequestId)
-  plug(Plug.Telemetry, event_prefix: [:phoenix, :endpoint])
+
+  plug(Plug.Telemetry,
+    event_prefix: [:phoenix, :endpoint],
+    log: {__MODULE__, :request_log_level, []}
+  )
 
   plug(Plug.Parsers,
     parsers: [:urlencoded, :multipart, :json],
@@ -46,4 +48,9 @@ defmodule ThrottleWeb.Endpoint do
   plug(Plug.Head)
   plug(Plug.Session, @session_options)
   plug(ThrottleWeb.Router)
+
+  # Keep request telemetry, but avoid two INFO log lines for every successful
+  # webhook or health probe. Failed responses remain visible in Render logs.
+  def request_log_level(%{status: status}) when is_integer(status) and status >= 400, do: :warning
+  def request_log_level(_conn), do: :debug
 end

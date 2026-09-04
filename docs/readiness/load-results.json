@@ -1,0 +1,17 @@
+{
+  "at": "2026-09-04T21:58:26.896834Z",
+  "concurrency": 20,
+  "delivery": "simulated 204; local database; no WAN latency",
+  "admission_queries": 330000,
+  "processed": 55000,
+  "dispatch_queries": 9073,
+  "actions": 55000,
+  "durable_rows": 55000,
+  "admission_seconds": 8.741243,
+  "admission_per_second": 6292.011330654004,
+  "admission_p50_ms": 0.918,
+  "admission_p95_ms": 2.614,
+  "admission_p99_ms": 3.382,
+  "dispatch_seconds": 0.699459,
+  "dispatch_batches": 560
+}

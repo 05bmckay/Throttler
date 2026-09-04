@@ -25,11 +25,20 @@ defmodule ThrottleWeb.Router do
     pipe_through(:api)
 
     get("/health", HealthController, :show)
-    post("/config", ThrottleConfigController, :create)
-    get("/config/:portal_id/:action_id", ThrottleConfigController, :show)
+    get("/live", HealthController, :live)
 
     # OAuth routes with names
     get("/oauth/authorize", OAuthController, :authorize, as: :oauth_authorize)
     get("/oauth/callback", OAuthController, :callback, as: :oauth_callback)
+  end
+
+  pipeline :config_authorized do
+    plug(ThrottleWeb.Plugs.ConfigAuth)
+  end
+
+  scope "/api", ThrottleWeb do
+    pipe_through([:api, :config_authorized])
+    post("/config", ThrottleConfigController, :create)
+    get("/config/:portal_id/:action_id", ThrottleConfigController, :show)
   end
 end

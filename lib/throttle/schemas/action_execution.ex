@@ -10,10 +10,13 @@ defmodule Throttle.Schemas.ActionExecution do
     field(:time, :string)
     field(:period, :string)
     field(:expires_at, :utc_datetime)
+    field(:claim_token, Ecto.UUID)
+    field(:rate_reserved, :boolean, default: false)
+    field(:completed_at, :utc_datetime_usec)
 
     field(:last_failure_reason, :string)
     field(:consecutive_failures, :integer, default: 0)
-    field(:on_hold_until, :utc_datetime)
+    field(:on_hold_until, :utc_datetime_usec)
     field(:total_attempts, :integer, default: 0)
     field(:permanently_failed, :boolean, default: false)
 

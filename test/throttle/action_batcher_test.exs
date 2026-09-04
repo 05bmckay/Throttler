@@ -1,30 +1,19 @@
 defmodule Throttle.ActionBatcherTest do
-  use ExUnit.Case, async: true
+  # The buffer and mailbox deadlines have been removed. Preserve the admission
+  # regression at its new boundary: no successful response before persistence.
+  use Throttle.DataCase
+  import Throttle.DispatchFixtures
 
-  alias Throttle.ActionBatcher
+  test "admission has no in-memory success or later ghost insert" do
+    assert {:error, :invalid_action} =
+             Throttle.Admission.admit(attrs("invalid", %{max_throughput: "0"}))
 
-  test "drops an admission request whose caller deadline has already expired" do
-    state = %{
-      buffer: [],
-      buffer_size: 0,
-      queues: %{},
-      queued_size: 0,
-      flush_interval: 5_000,
-      timer_ref: nil,
-      flushing: false,
-      flush_task_ref: nil,
-      pending_flush: []
-    }
+    assert Throttle.Repo.aggregate(Throttle.Schemas.ActionExecution, :count) == 0
+    action = admit("committed")
 
-    expired_deadline = System.monotonic_time(:millisecond) - 1
+    assert Throttle.Repo.get!(Throttle.Schemas.ActionExecution, action.id).callback_id ==
+             "committed"
 
-    assert {:reply, {:error, :overloaded}, returned_state} =
-             ActionBatcher.handle_call(
-               {:add_action, %{callback_id: "expired-admission"}, expired_deadline},
-               {self(), make_ref()},
-               state
-             )
-
-    assert returned_state == state
+    assert Process.whereis(Throttle.ActionBatcher) == nil
   end
 end

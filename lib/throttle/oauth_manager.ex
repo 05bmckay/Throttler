@@ -1,7 +1,7 @@
 defmodule Throttle.OAuthManager do
   alias Throttle.{Repo, Schemas.SecureOAuthToken}
   require Logger
-  # import Ecto.Query
+  import Ecto.Query
 
   @moduledoc """
   The OAuthManager module handles OAuth token management, including
@@ -11,11 +11,11 @@ defmodule Throttle.OAuthManager do
   @hubspot_base_url "https://api.hubapi.com"
 
   def store_token(token_data) do
-    Logger.info("Attempting to store token")
+    Logger.debug("Attempting to store token")
 
     case fetch_token_details(token_data["access_token"]) do
       {:ok, token_details} ->
-        Logger.info("Successfully fetched token details for portal: #{token_details["hub_id"]}")
+        Logger.debug("Successfully fetched token details for portal: #{token_details["hub_id"]}")
 
         # Merge token details with original token data for complete response
         full_token_response = Map.merge(token_data, token_details)
@@ -32,7 +32,7 @@ defmodule Throttle.OAuthManager do
         |> Repo.insert(on_conflict: :replace_all, conflict_target: :portal_id)
         |> case do
           {:ok, token} ->
-            Logger.info("Token stored successfully for portal_id: #{token.portal_id}")
+            Logger.debug("Token stored successfully for portal_id: #{token.portal_id}")
             {:ok, token}
 
           {:error, changeset} ->
@@ -47,7 +47,7 @@ defmodule Throttle.OAuthManager do
   end
 
   defp fetch_token_details(access_token) do
-    Logger.info("Fetching token details from HubSpot")
+    Logger.debug("Fetching token details from HubSpot")
     url = "#{@hubspot_base_url}/oauth/2026-03/token/introspect"
 
     body =
@@ -62,9 +62,9 @@ defmodule Throttle.OAuthManager do
 
     request = Finch.build(:post, url, headers, body)
 
-    case Finch.request(request, Throttle.Finch, receive_timeout: 15_000, request_timeout: 30_000) do
+    case Throttle.HTTP.request(request) do
       {:ok, %Finch.Response{status: 200, body: resp_body}} ->
-        Logger.info("Successfully fetched token details")
+        Logger.debug("Successfully fetched token details")
 
         case Jason.decode(resp_body) do
           {:ok, decoded} -> {:ok, decoded}
@@ -88,66 +88,67 @@ defmodule Throttle.OAuthManager do
   @hubspot_oauth_url "https://api.hubapi.com/oauth/2026-03/token"
 
   def get_token(portal_id) do
-    Logger.info("Getting token for portal: #{portal_id}")
-
     case Repo.get_by(SecureOAuthToken, portal_id: portal_id) do
       nil ->
-        Logger.warning("Token not found for portal: #{portal_id}")
         {:error, :token_not_found}
 
       token ->
-        Logger.info("Token found for portal: #{portal_id}")
-
-        case SecureOAuthToken.decrypt_tokens(token) do
-          {:ok, decrypted_token} ->
-            if token_expired?(decrypted_token) or token_expiring_soon?(decrypted_token) do
-              Logger.info("Token expired or expiring soon for portal: #{portal_id}, refreshing")
-
-              Throttle.OAuthRefreshLock.refresh_if_needed(portal_id, fn ->
-                refresh_token(decrypted_token)
-              end)
-            else
-              Logger.info("Token valid for portal: #{portal_id}")
-              {:ok, decrypted_token}
-            end
-
-          {:error, _reason} ->
-            {:error, :token_decryption_failed}
+        if token_expiring_soon?(token) do
+          locked_refresh(portal_id, nil)
+        else
+          SecureOAuthToken.decrypt_tokens(token)
         end
     end
   end
 
-  @doc """
-  Refreshes a portal token even when its stored expiry is still in the future.
-
-  HubSpot can invalidate a token before `expires_at`; a 401 must therefore bypass
-  the normal expiry check instead of calling `get_token/1` again.
-  """
-  def force_refresh_token(portal_id) do
-    Throttle.OAuthRefreshLock.refresh_if_needed(portal_id, fn ->
-      case Repo.get_by(SecureOAuthToken, portal_id: portal_id) do
-        nil ->
-          {:error, :token_not_found}
-
-        token ->
-          with {:ok, decrypted_token} <- SecureOAuthToken.decrypt_tokens(token) do
-            refresh_token(decrypted_token)
-          end
-      end
-    end)
+  def force_refresh_token(portal_id, rejected_access_token) do
+    locked_refresh(portal_id, rejected_access_token)
   end
 
-  def refresh_token(token) do
-    Logger.info("Refreshing token for portal: #{token.portal_id}")
+  # A row lock coordinates refreshes across instances. No detached refresh task
+  # can outlive/release an in-memory mutex. Re-read after locking to reuse a
+  # token another instance already refreshed. Network calls have finite timeouts.
+  defp locked_refresh(portal_id, rejected_access_token) do
+    case Repo.transaction(
+           fn ->
+             Repo.query!("SET LOCAL lock_timeout = '2s'")
+
+             token =
+               Repo.one(
+                 from t in SecureOAuthToken, where: t.portal_id == ^portal_id, lock: "FOR UPDATE"
+               )
+
+             if is_nil(token), do: Repo.rollback(:token_not_found)
+
+             with {:ok, decrypted} <- SecureOAuthToken.decrypt_tokens(token) do
+               needs_refresh =
+                 if is_nil(rejected_access_token),
+                   do: token_expiring_soon?(token),
+                   else: decrypted.access_token == rejected_access_token
+
+               if needs_refresh, do: refresh_token(decrypted), else: {:ok, decrypted}
+             end
+           end,
+           timeout: 70_000
+         ) do
+      {:ok, result} -> result
+      {:error, reason} -> {:error, reason}
+    end
+  rescue
+    _e in [DBConnection.ConnectionError, Postgrex.Error] -> {:error, :token_refresh_unavailable}
+  end
+
+  defp refresh_token(token) do
+    Logger.debug("Refreshing token for portal: #{token.portal_id}")
 
     case do_refresh_token(token) do
       {:ok, new_token_data} ->
-        Logger.info("Token refreshed successfully for portal: #{token.portal_id}")
+        Logger.debug("Token refreshed successfully for portal: #{token.portal_id}")
 
         # Only fetch token details if token_response is nil/empty
         new_attrs =
           if is_nil(token.token_response) or token.token_response == %{} do
-            Logger.info("Token response is empty, fetching full token details")
+            Logger.debug("Token response is empty, fetching full token details")
 
             case fetch_token_details(new_token_data["access_token"]) do
               {:ok, token_details} ->
@@ -178,7 +179,7 @@ defmodule Throttle.OAuthManager do
             }
           end
 
-        update_token_with_retry(token, new_attrs, _attempts = 3)
+        update_and_decrypt_token(token, new_attrs)
 
       {:error, reason} ->
         Logger.error("Failed to refresh token for portal #{token.portal_id}: #{inspect(reason)}")
@@ -186,26 +187,10 @@ defmodule Throttle.OAuthManager do
     end
   end
 
-  defp update_token_with_retry(token, attrs, attempts) when attempts > 0 do
+  defp update_and_decrypt_token(token, attrs) do
     case update_token(token, attrs) do
-      {:ok, updated_token} ->
-        Logger.info("Token updated in database for portal: #{token.portal_id}")
-        SecureOAuthToken.decrypt_tokens(updated_token)
-
-      {:error, reason} when attempts > 1 ->
-        Logger.warning(
-          "Failed to update token for portal #{token.portal_id} (#{attempts - 1} retries left): #{inspect(reason)}"
-        )
-
-        Process.sleep(500)
-        update_token_with_retry(token, attrs, attempts - 1)
-
-      {:error, reason} ->
-        Logger.error(
-          "Failed to update token in database for portal #{token.portal_id} after retries: #{inspect(reason)}"
-        )
-
-        {:error, :token_update_failed}
+      {:ok, updated} -> SecureOAuthToken.decrypt_tokens(updated)
+      {:error, _changeset} -> {:error, :token_update_failed}
     end
   end
 
@@ -237,12 +222,12 @@ defmodule Throttle.OAuthManager do
   defp token_expiring_soon?(token) do
     # 5 minutes
     expiring_soon = DateTime.diff(token.expires_at, DateTime.utc_now()) < 300
-    Logger.info("Token expiring soon check for portal #{token.portal_id}: #{expiring_soon}")
+    Logger.debug("Token expiring soon check for portal #{token.portal_id}: #{expiring_soon}")
     expiring_soon
   end
 
   defp do_refresh_token(token) do
-    Logger.info("Performing token refresh for portal: #{token.portal_id}")
+    Logger.debug("Performing token refresh for portal: #{token.portal_id}")
 
     body =
       URI.encode_query(%{
@@ -258,9 +243,9 @@ defmodule Throttle.OAuthManager do
 
     request = Finch.build(:post, @hubspot_oauth_url, headers, body)
 
-    case Finch.request(request, Throttle.Finch, receive_timeout: 15_000, request_timeout: 30_000) do
+    case Throttle.HTTP.request(request) do
       {:ok, %Finch.Response{status: 200, body: resp_body}} ->
-        Logger.info("Token refresh successful")
+        Logger.debug("Token refresh successful")
 
         case Jason.decode(resp_body) do
           {:ok, decoded_body} -> {:ok, decoded_body}

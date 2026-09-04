@@ -37,3 +37,6 @@ npm-debug.log
 
 throttler-ratelimiter/
 throttler-ratelimiter/.editorconfig
+
+# Local Python rehearsal-script bytecode.
+__pycache__/

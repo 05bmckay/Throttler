@@ -1,174 +1,74 @@
 # Throttle
 
-Rate-limited HubSpot workflow action processor. Receives webhook callbacks from HubSpot, buffers them into PostgreSQL, and processes them back to HubSpot at configurable throughput limits per workflow action.
+Durable, rate-limited HubSpot workflow callbacks using Phoenix, PostgreSQL, and Finch. A signed webhook returns `200 BLOCK` only after its callback has committed to PostgreSQL. Replays reuse the same row and original deadline. Completed callbacks return `SUCCESS`; terminal or expired callbacks return `FAIL_CONTINUE`.
 
-## Why This Exists
-
-HubSpot workflow custom actions fire webhooks for every enrollment. High-volume workflows can generate thousands of callbacks per minute, but the HubSpot API enforces rate limits on completion callbacks. Throttle sits between the webhook and the callback — accepting actions instantly (204), batching writes to Postgres, then draining them back to HubSpot at whatever rate each portal/action is configured for.
-
-## How It Works
-
-```
-HubSpot webhook                                          HubSpot API
-     │                                                        ▲
-     ▼                                                        │
-POST /api/hubspot/action                          POST /automation/v4/actions/
-     │  (signature verified)                       callbacks/complete
-     ▼                                                        │
-ActionBatcher (GenServer)                         HubSpotClient (Finch)
-     │  buffer → flush every 500ms-5s                         ▲
-     ▼                                                        │
-Repo.insert_all(action_executions)                PortalQueue (per-portal GenServer)
-     │                                                        ▲
-     ▼                                                        │
-QueueRunner.ensure_started  ──►  QueueRunner :tick ───────────┘
-     (Registry lookup)            Process.send_after → fetch batch → dispatch
+```text
+Verified webhook → Admission transaction → action_executions + dispatch_queues
+                                             ↓
+                            bounded Dispatcher → owned portal lease
+                                             ↓
+                                   OAuth → HubSpot callback
+                                             ↓
+                              owner-checked completion / retry
 ```
 
-Each portal+workflow+action combination gets a unique queue ID (`queue:{portal}:{workflow}:{action}:{index}`). A `QueueRunner` GenServer per queue drains actions at the configured rate using `Process.send_after` for precise BEAM-timer scheduling with zero DB overhead per tick. Runners stop themselves when the queue is drained and restart when new actions arrive.
+Postgres owns queue budgets, due times, retries, and portal leases. One small dispatcher schedules at most 16 tasks per instance; portal ownership prevents competing instances from concurrently delivering for the same portal. There are no per-queue or per-portal GenServers, volatile admission buffers, or config cache. Oban runs expiry and retention maintenance only.
 
-## Quick Start
+## Rate and delivery contract
 
-```bash
-# Install dependencies
+A due queue reserves up to its configured allowance from already-pending actions. Reservations drain in batches of at most 100. New arrivals wait for the next interval; retries retain their original reservation. Rate configuration updates preserve the current reservation and next due time. Explicit inputs on a newly accepted webhook become the queue's current configuration.
+
+Configured rates are ceilings, not throughput guarantees; HTTP latency and upstream limits can reduce delivery speed. Portal-wide 429 cooldowns persist across restarts. Transient failures use one durable retry schedule, ending after 20 failed attempts or callback expiration. Invalid multi-item batches are isolated into single-item requests before permanently failing individual callbacks. Tasks have a 120-second watchdog and 180-second database lease. A late owner cannot change a replacement owner's rows.
+
+External delivery is **at least once**: HubSpot may accept a request just before the process loses the response or crashes. Database fencing prevents stale local writes but cannot revoke a request already accepted by HubSpot. Callback identities remain unique until terminal retention removes them; retention is at least 35 days from insertion and recorded completion, and seven days past the callback deadline.
+
+## Development and verification
+
+Validated locally with Elixir 1.19.5 / OTP 28 and PostgreSQL 14/15. CI targets PostgreSQL 16; its remote run is a release gate.
+
+```sh
 mix deps.get
-
-# Create and migrate the database
 mix ecto.setup
-
-# Start the server (port 4000)
 mix phx.server
+mix test
+mix format --check-formatted
+MIX_ENV=test mix compile --warnings-as-errors
 ```
 
-### Required Environment Variables
+`DEV_DATABASE_URL` defaults to a local `throttle_dev` database. Remote development databases require a trusted TLS certificate. Test data uses `TEST_DATABASE_URL`, defaulting to local `throttle_test`. Tests use fake HTTP responses and never contact HubSpot. Local dispatch defaults off; enable `:dispatch_enabled` deliberately for a development integration run.
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `DATABASE_URL` | Yes | PostgreSQL connection string |
-| `SECRET_KEY_BASE` | Production | Phoenix signing key (generate with `mix phx.gen.secret`) |
-| `HUBSPOT_BLOCK_EXPIRATION_DURATION` | No | ISO 8601 duration for blocked workflow actions (default `P4W`) |
-| `THROTTLE_RECOVERY_QUEUES_PER_RUN` | No | Missing backlog runners started per 5-minute recovery pass (default: 1) |
-| `ENCRYPTION_KEY` | Yes | AES-256-GCM key for OAuth token encryption at rest |
-| `HUBSPOT_CLIENT_ID` | Yes | HubSpot app OAuth client ID |
-| `HUBSPOT_CLIENT_SECRET` | Yes | HubSpot app OAuth client secret |
-| `HUBSPOT_REDIRECT_URI` | Production | OAuth callback URL (e.g. `https://yourapp.com/api/oauth/callback`) |
-| `BASE_URL` | Production | Public hostname for the app |
-| `PORT` | No | HTTP port (default: 4000) |
-| `POOL_SIZE` | No | PostgreSQL connection pool size (default: 20; production maximum: 20) |
+## Production configuration
+
+| Variable | Purpose |
+| --- | --- |
+| `DATABASE_URL` | PostgreSQL URL with a hostname matching its TLS certificate |
+| `DATABASE_TLS_SERVER_NAME` | Optional verified certificate hostname when connecting through a private alias |
+| `DATABASE_CA_CERT_PATH` | Optional private CA file; otherwise use system trust roots |
+| `SECRET_KEY_BASE` | Phoenix session signing secret |
+| `ENCRYPTION_KEY` | Existing Base64-encoded 32-byte key; preserve it across deploys |
+| `HUBSPOT_CLIENT_ID`, `HUBSPOT_CLIENT_SECRET` | App credentials and webhook verification secret |
+| `HUBSPOT_REDIRECT_URI` | Registered OAuth callback URL |
+| `THROTTLE_ADMISSION_ENABLED` | Must be `true` to accept callbacks; production defaults off |
+| `THROTTLE_DISPATCH_ENABLED` | Must be `true` to deliver callbacks; production defaults off |
+| `THROTTLE_CONFIG_API_KEY` | Bearer key of at least 32 bytes; absent means config API closed |
+| `HUBSPOT_BLOCK_EXPIRATION_DURATION` | Default `P4W`, maximum callback blocking horizon |
+| `BASE_URL`, `PORT` | Public hostname and listener port |
+| `POOL_SIZE` | Default 20, capped at 20 per instance |
+
+TLS peer and hostname verification are required. Do not restore `verify_none`. Successful requests log at debug while failures remain visible; request and database telemetry remain enabled. Sensitive OAuth metadata is allowlisted and credential fields are encrypted.
 
 ## API
 
-### Webhook Endpoint
+- `POST /api/hubspot/action`: HubSpot signature verification, durable admission, replay-safe response; maintenance/database failure returns retryable `503`.
+- `GET /api/live`: process liveness for the documented paused cutover only.
+- `GET /api/health` and `/`: readiness; `200` requires admission, dispatcher, database, and candidate schema. Paused state returns `503`.
+- `POST /api/config` and `GET /api/config/:portal_id/:action_id`: require `Authorization: Bearer <THROTTLE_CONFIG_API_KEY>`.
+- `GET /api/oauth/authorize` and `/api/oauth/callback`: signed-session OAuth state and encrypted tokens; refreshes serialize using database row locks.
 
-```
-POST /api/hubspot/action
-```
+Example config JSON: `{"portal_id":12345,"action_id":"67890","max_throughput":10,"time_period":1,"time_unit":"seconds"}`.
 
-Receives HubSpot workflow action callbacks. Signature-verified via HMAC-SHA256 (v2). Returns `204` immediately — processing happens asynchronously.
+## Release
 
-### Throttle Configuration
+`./build.sh` compiles an API-only release. It does **not** migrate the database. Start with `_build/prod/rel/throttle/bin/throttle start`; use the release's `eval 'Throttle.Release.migrate()'` only during the offline cutover described in [ROLLOUT.md](docs/readiness/ROLLOUT.md).
 
-```
-POST /api/config
-```
-
-Create or update a throttle config for a portal/action pair:
-
-```json
-{
-  "portal_id": 12345,
-  "action_id": 67890,
-  "max_throughput": "10",
-  "time_period": "1",
-  "time_unit": "seconds"
-}
-```
-
-```
-GET /api/config/:portal_id/:action_id
-```
-
-Retrieve the current config.
-
-### OAuth
-
-```
-GET /api/oauth/authorize    # Redirects to HubSpot OAuth consent
-GET /api/oauth/callback     # Handles the OAuth code exchange
-```
-
-## Architecture
-
-### Supervision Tree
-
-```
-Throttle.Supervisor (one_for_one)
-├── Throttle.Repo                    Ecto/PostgreSQL
-├── ThrottleWeb.Telemetry            Metrics
-├── Phoenix.PubSub                   PubSub
-├── ThrottleWeb.Endpoint             HTTP server
-├── Throttle.FlushTaskSupervisor     Task.Supervisor for async DB flushes
-├── Throttle.ActionBatcher           Buffers incoming actions, flushes to DB
-├── Throttle.ConfigCache             In-memory config with 5-min TTL
-├── Throttle.OAuthRefreshLock        Per-portal mutex for token refreshes
-├── Finch (Throttle.Finch)           HTTP connection pool (25 conns × 2 pools)
-├── Oban                             Cron jobs (JobCleaner, DataRetention)
-├── Throttle.QueueRunnerRegistry     Registry for per-queue rate-limit runners
-├── Throttle.QueueRunnerSupervisor   DynamicSupervisor (max 1000 children)
-│   └── Throttle.QueueRunner         One GenServer per active queue_id
-├── Throttle.PortalRegistry          Registry for per-portal queue processes
-└── Throttle.PortalQueueSupervisor   DynamicSupervisor (max 500 children)
-    └── Throttle.PortalQueue         One GenServer per active portal
-```
-
-### Key Modules
-
-| Module | Role |
-|--------|------|
-| `ActionBatcher` | GenServer that buffers webhook payloads and batch-inserts them into `action_executions`. Adaptive flush interval (500ms–5s). Async flushes via Task.Supervisor. Starts QueueRunners after successful inserts. |
-| `QueueRunner` | Per-queue GenServer that drains actions at the configured rate. Uses `Process.send_after` for precise tick timing (zero DB writes for scheduling). Stops when queue is drained, restarted by ActionBatcher when new actions arrive. |
-| `ThrottleWorker` | Thin Oban worker — starts a QueueRunner and exits. Only used by JobCleaner as a recovery mechanism. Also hosts `process_with_token/2` for HTTP callback handling. |
-| `HubSpotClient` | Finch-based HTTP client for the HubSpot callbacks API. Handles 429 rate limits, 403 blocks, retries. |
-| `ActionQueries` | Ecto queries for batch fetching, marking processed, tracking consecutive failures with hold-off. |
-| `PortalQueue` | Per-portal GenServer that batches HTTP calls (900ms flush, max 100). Fetches OAuth tokens and delegates to `HubSpotClient`. |
-| `ConfigCache` | GenServer cache with 5-minute TTL and `bust_cache/2` invalidation API. |
-| `OAuthManager` | Token storage, encryption (AES-256-GCM), refresh logic. |
-| `OAuthRefreshLock` | GenServer mutex — serializes token refreshes per portal to prevent race conditions. |
-| `JobCleaner` | Oban cron (every 5 min) — finds queues with unprocessed actions but no running QueueRunner, inserts a ThrottleWorker job to restart it. |
-| `DataRetentionWorker` | Oban cron (daily 3AM UTC) — prunes processed actions older than 30 days in batches of 1000. |
-
-### Database Schema
-
-**`action_executions`** — Webhook payload buffer. Each row is one HubSpot callback waiting to be processed.
-
-| Column | Type | Notes |
-|--------|------|-------|
-| `queue_id` | string | `queue:{portal}:{workflow}:{action}:{index}` |
-| `callback_id` | string | HubSpot callback identifier |
-| `processed` | boolean | `false` until successfully called back |
-| `max_throughput` | string | Rate limit (from config at time of receipt) |
-| `time` / `period` | string | Rate window (e.g. "1" / "seconds") |
-| `consecutive_failures` | integer | Incremented on HTTP errors, triggers hold-off at 3 |
-| `on_hold_until` | datetime | Set to now + 30min after 3 consecutive failures |
-
-Indexed: `(queue_id, processed) WHERE processed = false`
-
-**`throttle_configs`** — Per-action rate limit settings. Unique on `(portal_id, action_id)`.
-
-**`oauth_tokens`** — Encrypted HubSpot OAuth credentials. Unique on `portal_id`. Tokens encrypted with AES-256-GCM at rest.
-
-## Production Build
-
-```bash
-./build.sh
-# or manually:
-mix deps.get --only prod
-MIX_ENV=prod mix compile
-MIX_ENV=prod mix release --overwrite
-```
-
-The release reads all secrets from environment variables at boot via `config/runtime.exs`.
-
-Render's build and start scripts both reconcile pending migrations. Readiness is
-available at `/api/health`, with `/` serving the same check for Render's default
-root probe.
+Read [candidate results](docs/readiness/RESULTS.md) and the [September 4 audit](docs/audits/2026-09-04/AUDIT.md) before deploying. This migration is incompatible with an overlapping old dispatcher and deliberately forward-only. Existing queues receive a conservative full-interval initial cooldown.

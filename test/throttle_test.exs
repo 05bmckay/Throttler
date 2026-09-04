@@ -1,13 +1,13 @@
 defmodule ThrottleTest do
   use ExUnit.Case, async: true
 
-  alias Throttle.QueueRunner
+  alias Throttle.DispatchSupervisor
   alias Throttle.Schemas.{ActionExecution, ThrottleConfig}
 
-  test "QueueRunner normal exits are not restarted" do
-    child_spec = QueueRunner.child_spec({"queue:1:2:3:0", runner_config()})
-
-    assert child_spec.restart == :transient
+  test "scheduler and tasks restart together without orphaned delivery" do
+    assert {:ok, {%{strategy: :one_for_all}, children}} = DispatchSupervisor.init([])
+    assert length(children) == 2
+    assert {:ok, _rate} = Throttle.Rate.parse(runner_config().max_throughput, "1", "seconds")
   end
 
   test "action executions require every value needed by the runner" do

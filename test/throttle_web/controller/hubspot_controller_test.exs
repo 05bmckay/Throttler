@@ -4,6 +4,11 @@ defmodule ThrottleWeb.HubSpotControllerTest do
 
   alias ThrottleWeb.HubSpotController
 
+  test "malformed nested payload returns 400 without crashing" do
+    conn = HubSpotController.handle_action(build_conn(), %{"origin" => "invalid"})
+    assert %{"error" => "Invalid action payload"} = json_response(conn, 400)
+  end
+
   test "BLOCK response includes an explicit expiration window" do
     assert %{
              hs_execution_state: "BLOCK",

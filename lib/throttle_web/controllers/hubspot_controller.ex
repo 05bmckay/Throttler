@@ -2,7 +2,11 @@ defmodule ThrottleWeb.HubSpotController do
   use ThrottleWeb, :controller
   require Logger
 
-  def handle_action(conn, params) do
+  def handle_action(
+        conn,
+        %{"origin" => origin, "context" => context, "inputFields" => inputs} = params
+      )
+      when is_map(origin) and is_map(context) and is_map(inputs) do
     with {:ok, _portal_id} <- validate_portal_id(get_in(params, ["origin", "portalId"])),
          {:ok, _action_id} <- validate_action_id(get_in(params, ["origin", "actionDefinitionId"])),
          {:ok, callback_id} <- required(params["callbackId"], "callback ID"),
@@ -10,7 +14,7 @@ defmodule ThrottleWeb.HubSpotController do
            positive_integer(get_in(params, ["inputFields", "maxThroughPut"]), "max throughput"),
          {:ok, time} <- positive_integer(get_in(params, ["inputFields", "time"]), "time"),
          {:ok, period} <- normalize_period(get_in(params, ["inputFields", "period"])),
-         queue_id <- Throttle.create_queue_identifier(params),
+         {:ok, queue_id} <- Throttle.create_queue_identifier(params),
          result <-
            Throttle.create_action_execution(%{
              queue_id: queue_id,
@@ -21,8 +25,8 @@ defmodule ThrottleWeb.HubSpotController do
              period: period,
              expires_at: Throttle.BlockExpiration.expires_at()
            }),
-         :ok <- handle_create_action_result(result) do
-      send_success_response(conn)
+         {:ok, action} <- result do
+      send_success_response(conn, action)
     else
       {:error, reason} when reason in [:overloaded, :unavailable] ->
         send_retryable_error_response(conn, reason)
@@ -31,6 +35,8 @@ defmodule ThrottleWeb.HubSpotController do
         send_error_response(conn, reason)
     end
   end
+
+  def handle_action(conn, _params), do: send_error_response(conn, "Invalid action payload")
 
   defp validate_portal_id(nil), do: {:error, "Missing portal ID"}
   defp validate_portal_id(portal_id), do: {:ok, portal_id}
@@ -43,8 +49,8 @@ defmodule ThrottleWeb.HubSpotController do
   defp required(value, _field), do: {:ok, value}
 
   defp positive_integer(value, field) do
-    case Integer.parse(to_string(value || "")) do
-      {integer, ""} when integer > 0 -> {:ok, Integer.to_string(integer)}
+    case Throttle.Rate.positive(value) do
+      {:ok, integer} -> {:ok, Integer.to_string(integer)}
       _ -> {:error, "Invalid #{field}: must be a positive integer"}
     end
   end
@@ -55,19 +61,25 @@ defmodule ThrottleWeb.HubSpotController do
   defp normalize_period(period) when period in ["day", "days"], do: {:ok, "days"}
   defp normalize_period(_period), do: {:error, "Invalid period"}
 
-  defp handle_create_action_result(:ok), do: :ok
-  defp handle_create_action_result({:ok, _}), do: :ok
-  defp handle_create_action_result({:error, reason}), do: {:error, reason}
+  defp send_success_response(conn, action) do
+    fields =
+      cond do
+        action.processed ->
+          %{hs_execution_state: "SUCCESS"}
 
-  defp handle_create_action_result(unexpected) do
-    Logger.error("Unexpected result from create_action_execution: #{inspect(unexpected)}")
-    {:error, "Internal server error"}
-  end
+        action.permanently_failed ->
+          %{hs_execution_state: "FAIL_CONTINUE"}
 
-  defp send_success_response(conn) do
-    conn
-    |> put_status(:ok)
-    |> json(%{outputFields: block_output_fields()})
+        is_nil(action.expires_at) or
+            DateTime.compare(action.expires_at, DateTime.utc_now()) != :gt ->
+          %{hs_execution_state: "FAIL_CONTINUE"}
+
+        true ->
+          seconds = max(DateTime.diff(action.expires_at, DateTime.utc_now(), :second), 1)
+          %{hs_execution_state: "BLOCK", hs_expiration_duration: "PT#{seconds}S"}
+      end
+
+    json(conn, %{outputFields: fields})
   end
 
   def block_output_fields do
@@ -82,7 +94,7 @@ defmodule ThrottleWeb.HubSpotController do
 
     conn
     |> put_status(:bad_request)
-    |> json(%{error: reason})
+    |> json(%{error: to_string(reason)})
   end
 
   defp send_retryable_error_response(conn, reason) do

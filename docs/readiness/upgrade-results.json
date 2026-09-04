@@ -1,0 +1,10 @@
+{
+  "data": "synthetic local fixtures; not production scale",
+  "unique_callbacks": true,
+  "completed_duplicate_wins": true,
+  "active_work_preserved": true,
+  "latest_historical_config": true,
+  "conservative_daily_cooldown": true,
+  "metadata_secrets_removed": true,
+  "migration_seconds": 0.050354
+}

@@ -36,8 +36,8 @@ defmodule Throttle.Encryption do
           decrypt_legacy_cbc(key, decoded)
       end
     rescue
-      e ->
-        Logger.error("Decryption failed: #{inspect(e)}")
+      _ ->
+        Logger.error("OAuth token decryption failed")
         {:error, :decryption_failed}
     end
   end
