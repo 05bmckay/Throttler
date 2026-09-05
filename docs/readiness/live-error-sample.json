@@ -1,0 +1,18 @@
+{
+  "since": "2026-09-04T22:13:57.007091+00:00",
+  "sampled_error_records": 100,
+  "limit": 100,
+  "scope": "Bounded error-log sample, not a count of all requests or proof of error-free operation",
+  "termination_headers": {
+    "process": 100,
+    "terminating": 100
+  },
+  "expanded_context": {
+    "start": "2026-09-04T22:40:01Z",
+    "end": "2026-09-04T22:40:03Z",
+    "records": 734,
+    "exit_headers": 92,
+    "phoenix_no_route_errors": 92
+  },
+  "interpretation": "The expanded two-second context identifies unknown-route errors, consistent with scanner traffic. This explains that sampled burst; it does not establish the cause of every error or an aggregate failure rate. No callback-loss conclusion follows from these request-process exits."
+}

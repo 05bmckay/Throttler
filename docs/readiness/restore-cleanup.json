@@ -1,0 +1,6 @@
+{
+  "private_backup_directory_removed": true,
+  "rehearsal_container_removed": true,
+  "rehearsal_data_volume_removed": true,
+  "scope": "Deleted the task-owned local backup, restored database, and raw rehearsal logs; Render backup retained"
+}

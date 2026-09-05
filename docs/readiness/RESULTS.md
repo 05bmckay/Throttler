@@ -1,6 +1,6 @@
 # Production-readiness candidate — September 4, 2026
 
-The release candidate is implemented and locally validated on `codex/production-readiness`. Production remains unchanged. Deployment acceptance still requires the live gates in [ROLLOUT.md](ROLLOUT.md); this report does not claim a deployed or production-load-tested result.
+The release candidate is implemented and locally validated on `codex/production-readiness`. See [LIVE_PREP.md](LIVE_PREP.md) for the later PostgreSQL 16 regression run, approved production-backup restore, schema reconciliation, current Render metrics, and remaining cutover gates. Production remains unchanged. Deployment acceptance still requires the live gates in [ROLLOUT.md](ROLLOUT.md); this report does not claim a deployed or production-load-tested result.
 
 ## What changed
 
@@ -43,10 +43,10 @@ Raw results: [16-portal burst](load-results.json), [single-portal burst](hot-por
 
 The synthetic historical-table rehearsal used **7.6 million rows and ten pre-cutover indexes**. All 42 pending fixtures survived. Migration took approximately **82 seconds**, including about 0.194 seconds of count verification. Database size grew from 2.62 GB to 3.35 GB; measured WAL upper bound was 666 MB; cumulative temporary writes were 2.88 GB. Temporary writes are not a peak-free-space requirement. Exact timing was recovered from query log timestamps because a reporting-only LSN codec error occurred after the migration and assertions; the reporting query has been corrected.
 
-The data distribution, extra indexes, local machine, and PostgreSQL version differ from production. A verified restore of the actual production schema/data remains mandatory before choosing the maintenance window and storage headroom. See [scale results](scale-results.json), [fixture results](upgrade-results.json), and guarded scripts under `scripts/`.
+The data distribution, extra indexes, local machine, and PostgreSQL version differ from production. A later verified production-backup restore passed; see [LIVE_PREP.md](LIVE_PREP.md) for its measured timing, limits, and proposed maintenance window and storage headroom. See [scale results](scale-results.json), [fixture results](upgrade-results.json), and guarded scripts under `scripts/`.
 
 ## Remaining release gates
 
-Require the exact candidate's remote CI; reconcile the unexplained historical migration and extra production indexes; rehearse a restored backup; verify TLS from Render; provision measured disk headroom; review current backlog deadlines and the conservative initial cooldown; then execute the paused cutover, real HubSpot smoke, and post-release observation. Verify daily-rate behavior through the next full due interval. No service deploy, migration, credential rotation, network change, push, or real callback send was performed here.
+Require the exact candidate's remote CI; refresh the schema and backup evidence in LIVE_PREP.md; verify TLS from Render; provision measured disk headroom; review current backlog deadlines and the conservative initial cooldown; then execute the paused cutover, real HubSpot smoke, and post-release observation. Verify daily-rate behavior through the next full due interval. No service deploy, migration, credential rotation, network change, push, or real callback send was performed here.
 
 External HTTP delivery remains at least once: a server may accept a request before its response is lost. Unique admission and database fencing do not make an external side effect exactly once. Deduplication also has a finite retention horizon. Rollback after cutover is a paused forward fix; restarting the old dispatcher against new scheduling state is unsafe.

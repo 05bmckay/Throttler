@@ -1,0 +1,8 @@
+{
+  "migration_exit_code": 0,
+  "sampling_seconds": 2,
+  "sample_count": 56,
+  "peak_database_bytes": 2179759127,
+  "peak_default_tablespace_temp_bytes": 647913472,
+  "scope": "Sampled local restored database and temporary file sizes; excludes WAL and filesystem overhead; not guaranteed peak or Render timing"
+}

@@ -1,0 +1,25 @@
+{
+  "scope": "Actual Render logical export restored into isolated local PostgreSQL 16; no application or callback workers started; local timing is not a Render guarantee",
+  "before_rows": 7586370,
+  "before_pending": 7147,
+  "after_rows": 7582357,
+  "after_pending": 7147,
+  "duplicate_rows_removed": 4013,
+  "credential_metadata_rows_scrubbed": 17,
+  "migration_seconds": 94.860062,
+  "versions_applied": [
+    20260904190000,
+    20260904191000,
+    20260904192000,
+    20260904193000
+  ],
+  "before_database_bytes": 1717943319,
+  "after_database_bytes": 2095438871,
+  "migration_wal_bytes": 459318144,
+  "cumulative_temp_bytes": 4723598316,
+  "unique_callback_index_valid": true,
+  "all_active_work_has_queue": true,
+  "legacy_worker_jobs_cancelled": true,
+  "full_initial_cooldown": true,
+  "rerun_noop": true
+}

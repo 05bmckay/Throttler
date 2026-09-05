@@ -1,0 +1,16 @@
+{
+  "unknown_route_statuses": [
+    404,
+    404,
+    404
+  ],
+  "accept_headers": [
+    "application/json",
+    "*/*",
+    "text/html"
+  ],
+  "json_body_safe": true,
+  "no_route_error_stack_logged": false,
+  "request_process_termination_logged": false,
+  "scope": "Built production candidate paused with fake credentials, unavailable local database, and no workers; localhost HTTP probes only"
+}

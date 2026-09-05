@@ -68,6 +68,8 @@ def boot_check(enabled, before_migration=False):
                 raise RuntimeError('Release did not start')
             assert health == (200 if enabled else 503)
             assert status('/api/live') == 200
+            assert status('/nonexistent-readiness-probe') == 404
+            results['unknown_route'] = 404
             results['premigration_paused_health' if before_migration else 'active_health' if enabled else 'paused_health'] = health
             if enabled:
                 assert status('/api/config/1/2') == 401
