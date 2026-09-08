@@ -1,0 +1,12 @@
+{
+  "migration_seconds": 0.683961,
+  "counts": [
+    [
+      2122006,
+      120134
+    ]
+  ],
+  "counts_and_schedules_preserved": true,
+  "valid_index": true,
+  "second_run_no_op": true
+}

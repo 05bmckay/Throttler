@@ -106,6 +106,92 @@ defmodule Throttle.DispatchConcurrencyTest do
     assert length(Enum.uniq(ids)) == 1
   end
 
+  test "unchanged-rate admission does not wait for a dispatcher queue lock", %{
+    attrs: attrs,
+    queue: queue
+  } do
+    committed(fn -> assert {:ok, _} = Admission.admit(attrs) end)
+    parent = self()
+
+    locker =
+      Task.async(fn ->
+        committed(fn ->
+          Repo.transaction(fn ->
+            Repo.query!("SELECT queue_id FROM dispatch_queues WHERE queue_id=$1 FOR UPDATE", [
+              queue
+            ])
+
+            send(parent, :queue_locked)
+            receive do: (:release -> :ok)
+          end)
+        end)
+      end)
+
+    assert_receive :queue_locked, 5_000
+
+    admission =
+      Task.async(fn ->
+        committed(fn -> Admission.admit(%{attrs | callback_id: "#{attrs.callback_id}-new"}) end)
+      end)
+
+    # Always release the separate connection, including when the assertion fails.
+    result = Task.yield(admission, 1_000)
+    send(locker.pid, :release)
+    Task.await(locker)
+    if is_nil(result), do: Task.await(admission)
+    assert {:ok, {:ok, _}} = result
+  end
+
+  test "an aborted admission transaction returns retryable HTTP and can be replayed", %{
+    attrs: attrs,
+    portal: portal
+  } do
+    committed(fn -> assert {:ok, _} = Admission.admit(attrs) end)
+    handler = "abort-admission-#{portal}"
+
+    :ok =
+      :telemetry.attach(handler, [:throttle, :repo, :query], &__MODULE__.abort_after_read/4, nil)
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+    callback = "#{attrs.callback_id}-aborted"
+
+    params = %{
+      "callbackId" => callback,
+      "origin" => %{"portalId" => portal, "actionDefinitionId" => 903},
+      "context" => %{"workflowId" => 902},
+      "inputFields" => %{"maxThroughPut" => "1", "time" => "1", "period" => "days"}
+    }
+
+    committed(fn ->
+      Process.put(:abort_admission_after_read, true)
+      conn = ThrottleWeb.HubSpotController.handle_action(Phoenix.ConnTest.build_conn(), params)
+
+      assert %{"error" => "Throttler temporarily unavailable"} =
+               Phoenix.ConnTest.json_response(conn, 503)
+
+      assert Plug.Conn.get_resp_header(conn, "retry-after") == ["30"]
+      assert Repo.get_by(ActionExecution, callback_id: callback) == nil
+
+      conn = ThrottleWeb.HubSpotController.handle_action(Phoenix.ConnTest.build_conn(), params)
+
+      assert %{"outputFields" => %{"hs_execution_state" => "BLOCK"}} =
+               Phoenix.ConnTest.json_response(conn, 200)
+
+      assert Repo.aggregate(from(a in ActionExecution, where: a.callback_id == ^callback), :count) ==
+               1
+    end)
+  end
+
+  def abort_after_read(_event, _measurements, %{query: query}, _config) do
+    if Process.get(:abort_admission_after_read, false) and String.starts_with?(query, "SELECT") and
+         (String.contains?(query, "callback_id") or String.contains?(query, "max_throughput")) do
+      Process.delete(:abort_admission_after_read)
+      # This is a real nested transaction failure. DBConnection marks the
+      # outer transaction aborted and returns {:error, :rollback} at its end.
+      {:error, :test_abort} = Repo.transaction(fn -> Repo.rollback(:test_abort) end)
+    end
+  end
+
   test "independent claimants cannot multiply a daily rate", %{portal: portal, attrs: attrs} do
     committed(fn ->
       for n <- 1..5, do: Admission.admit(%{attrs | callback_id: "#{attrs.callback_id}-#{n}"})

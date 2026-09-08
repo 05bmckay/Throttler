@@ -1,0 +1,108 @@
+{
+  "delivery": "real dispatcher and database ownership; simulated success; HTTP forbidden",
+  "history_rows": 2000000,
+  "initial_pending": 120006,
+  "concurrent_admissions": 2000,
+  "concurrency": 20,
+  "duration_ms": 30141,
+  "admission_p95_ms": 18.745,
+  "admission_p99_ms": 177.502,
+  "completed_by_queue": [
+    [
+      "queue:9900001:902:903:0",
+      312
+    ],
+    [
+      "queue:9900002:902:903:0",
+      312
+    ],
+    [
+      "queue:9900003:902:903:0",
+      312
+    ],
+    [
+      "queue:9900004:902:903:0",
+      312
+    ],
+    [
+      "queue:9900005:902:903:0",
+      312
+    ],
+    [
+      "queue:9900006:902:903:0",
+      312
+    ]
+  ],
+  "query_plan": [
+    {
+      "Execution Time": 0.035,
+      "Plan": {
+        "Actual Loops": 1,
+        "Actual Rows": 12,
+        "Async Capable": false,
+        "Local Dirtied Blocks": 0,
+        "Local Hit Blocks": 0,
+        "Local Read Blocks": 0,
+        "Local Written Blocks": 0,
+        "Node Type": "Limit",
+        "Parallel Aware": false,
+        "Plan Rows": 12,
+        "Plan Width": 16,
+        "Plans": [
+          {
+            "Actual Loops": 1,
+            "Actual Rows": 12,
+            "Alias": "action_executions",
+            "Async Capable": false,
+            "Filter": "(((expires_at IS NULL) OR (expires_at > timezone('UTC'::text, clock_timestamp()))) AND ((on_hold_until IS NULL) OR (on_hold_until <= timezone('UTC'::text, clock_timestamp()))))",
+            "Index Cond": "(((queue_id)::text = 'queue:9900001:902:903:0'::text) AND (rate_reserved = false))",
+            "Index Name": "action_executions_pending_dispatch_index",
+            "Local Dirtied Blocks": 0,
+            "Local Hit Blocks": 0,
+            "Local Read Blocks": 0,
+            "Local Written Blocks": 0,
+            "Node Type": "Index Scan",
+            "Parallel Aware": false,
+            "Parent Relationship": "Outer",
+            "Plan Rows": 1017,
+            "Plan Width": 16,
+            "Relation Name": "action_executions",
+            "Rows Removed by Filter": 0,
+            "Rows Removed by Index Recheck": 0,
+            "Scan Direction": "Forward",
+            "Shared Dirtied Blocks": 0,
+            "Shared Hit Blocks": 5,
+            "Shared Read Blocks": 0,
+            "Shared Written Blocks": 0,
+            "Startup Cost": 0.42,
+            "Temp Read Blocks": 0,
+            "Temp Written Blocks": 0,
+            "Total Cost": 1910.51
+          }
+        ],
+        "Shared Dirtied Blocks": 0,
+        "Shared Hit Blocks": 5,
+        "Shared Read Blocks": 0,
+        "Shared Written Blocks": 0,
+        "Startup Cost": 0.42,
+        "Temp Read Blocks": 0,
+        "Temp Written Blocks": 0,
+        "Total Cost": 22.96
+      },
+      "Planning": {
+        "Local Dirtied Blocks": 0,
+        "Local Hit Blocks": 0,
+        "Local Read Blocks": 0,
+        "Local Written Blocks": 0,
+        "Shared Dirtied Blocks": 0,
+        "Shared Hit Blocks": 111,
+        "Shared Read Blocks": 0,
+        "Shared Written Blocks": 0,
+        "Temp Read Blocks": 0,
+        "Temp Written Blocks": 0
+      },
+      "Planning Time": 0.204,
+      "Triggers": []
+    }
+  ]
+}
