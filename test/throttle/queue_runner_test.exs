@@ -11,6 +11,41 @@ defmodule Throttle.QueueRunnerTest do
     state
   end
 
+  test "late logger overload replies leave delivery slots and watchdogs unchanged" do
+    ref = make_ref()
+    timer = Process.send_after(self(), :unused, 60_000)
+    on_exit(fn -> Process.cancel_timer(timer) end)
+    state = %{state() | enabled: true, tasks: %{ref => %{pid: self(), timer: timer}}}
+
+    assert {:noreply, ^state} = Dispatcher.handle_info({[:alias | ref], :dropped}, state)
+    assert Process.read_timer(timer) != false
+    refute_receive :drain
+  end
+
+  test "a running dispatcher survives repeated late logger replies and keeps polling" do
+    pid =
+      start_supervised!(%{
+        id: :logger_reply_dispatcher,
+        start: {GenServer, :start_link, [Dispatcher, []]},
+        restart: :temporary
+      })
+
+    before = :sys.get_state(pid)
+    Process.cancel_timer(before.timer)
+
+    for _ <- 1..10, do: send(pid, {[:alias | make_ref()], :dropped})
+    send(pid, :poll)
+
+    # This call is ordered after the injected messages and poll, and targets
+    # the original PID so a supervisor restart cannot hide the crash.
+    assert %{enabled: false, active_tasks: 0} = GenServer.call(pid, :status)
+    after_poll = :sys.get_state(pid)
+    assert after_poll.tasks == before.tasks
+    assert is_reference(after_poll.timer)
+    assert after_poll.timer != before.timer
+    assert Process.read_timer(after_poll.timer) != false
+  end
+
   test "delivery completion frees exactly one slot and stale messages are ignored" do
     ref = make_ref()
     timer = Process.send_after(self(), :unused, 60_000)

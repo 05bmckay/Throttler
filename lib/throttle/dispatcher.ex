@@ -31,6 +31,12 @@ defmodule Throttle.Dispatcher do
     {:noreply, schedule(state)}
   end
 
+  # Logger overload flushing can reply directly to the caller PID after its
+  # synchronous call timed out. This alias-tagged reply is not a delivery
+  # result. Do not log it and feed more work back into the overloaded logger.
+  def handle_info({[:alias | ref], :dropped}, state) when is_reference(ref),
+    do: {:noreply, state}
+
   def handle_info({ref, _result}, state) when is_reference(ref) do
     Process.demonitor(ref, [:flush])
     finished = forget_task(state, ref)
