@@ -1,5 +1,15 @@
 # Offline cutover and rollback
 
+## October 27 recovery-budget update
+
+For an installation already running the durable dispatcher, migration `20261027190000` adds a delivery window and count to `dispatch_queues`. It preserves existing rates, fresh-work budgets, and due times; existing queues start with delivery capacity spent until their current due time. This may delay retries on long-interval queues, which now share the configured delivery allowance with fresh work. Delivery remains at least once, and the limit governs persisted claims, not the exact time HubSpot advances downstream records.
+
+Require the exact candidate's Linux/PostgreSQL CI, dependency audit, and migration rehearsal to pass. Reconcile the deployed revision and schema and refresh backup/restore evidence before production migration. Use the existing maintenance/paused-release procedure below: admission and dispatch off, readiness 503, temporary `/api/live` health check, no old delivery tasks or active leases, then run the additive migration only after the new build finishes. Do not rerun historical cutover migrations or reset existing scheduling state. Verify only the new migration was applied and queue counts/rates/reservations remain unchanged before enabling dispatch and admission and restoring `/api/health`.
+
+Verify the exact serving revision and observe accepted admissions, queue delivery counts, errors, and pending deadlines after resuming. Keep daily-interval acceptance separate from a short smoke check. Recovery is not proof that edge-rejected requests were accepted or replayed. If the new release fails, pause and forward-fix; an old dispatcher does not enforce the new delivery budget.
+
+## Original durable-dispatch cutover
+
 This is a release procedure, not a deployment record. Candidate preparation changes no production application, schema, credentials, domain, or network policy; backup creation and read-only inspection are recorded separately in LIVE_PREP.md. Stop at any failed gate. Do not run the migration during a rolling overlap with the old dispatcher.
 
 ## Before scheduling
