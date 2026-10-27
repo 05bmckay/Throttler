@@ -91,6 +91,7 @@ defmodule Throttle.PortalQueueTest do
     assert {:isolate, "callback_http_400"} = Delivery.run(batch)
     assert Repo.aggregate(from(a in ActionExecution, where: a.permanently_failed), :count) == 0
     Repo.update_all(ActionExecution, set: [on_hold_until: DateTime.add(DateTime.utc_now(), -1)])
+    due()
     {:ok, isolated} = DispatchStore.claim(901)
     assert length(isolated.actions) == 1
   end

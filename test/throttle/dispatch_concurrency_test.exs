@@ -237,4 +237,54 @@ defmodule Throttle.DispatchConcurrencyTest do
       assert Repo.get!(ActionExecution, action.id).callback_id == attrs.callback_id
     end)
   end
+
+  test "competing recovery claimants cannot combine or immediately follow a retry with fresh work",
+       %{
+         portal: portal,
+         queue: queue,
+         attrs: attrs
+       } do
+    old =
+      committed(fn ->
+        for n <- 1..3,
+            do: Admission.admit(%{attrs | callback_id: "#{attrs.callback_id}-recovery-#{n}"})
+
+        {:ok, batch} = DispatchStore.claim(portal)
+
+        Repo.query!(
+          "UPDATE dispatch_portals SET lease_until=now()-interval '1 second' WHERE portal_id=$1",
+          [portal]
+        )
+
+        Repo.query!(
+          "UPDATE dispatch_queues SET next_run_at=now()-interval '1 second', delivery_window_until=now()-interval '1 second' WHERE queue_id=$1",
+          [queue]
+        )
+
+        Repo.update_all(from(a in ActionExecution, where: a.queue_id == ^queue),
+          set: [on_hold_until: DateTime.add(DateTime.utc_now(), -1)]
+        )
+
+        batch
+      end)
+
+    results =
+      1..10
+      |> Task.async_stream(fn _ -> committed(fn -> DispatchStore.claim(portal) end) end,
+        max_concurrency: 10,
+        timeout: 15_000
+      )
+      |> Enum.to_list()
+
+    batches = for {:ok, {:ok, batch}} <- results, batch != nil, do: batch
+    assert [recovered] = batches
+    assert Enum.map(recovered.actions, & &1.id) == Enum.map(old.actions, & &1.id)
+
+    committed(fn ->
+      assert {:error, :stale_claim} = DispatchStore.finish(old, :ok)
+      assert {:ok, _} = DispatchStore.finish(recovered, :ok)
+      assert {:ok, nil} = DispatchStore.claim(portal)
+      refute portal in DispatchStore.ready_portals(100)
+    end)
+  end
 end

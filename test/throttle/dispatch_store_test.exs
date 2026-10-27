@@ -4,6 +4,38 @@ defmodule Throttle.DispatchStoreTest do
   alias Throttle.{DispatchStore, Repo}
   alias Throttle.Schemas.ActionExecution
 
+  test "expired deliveries in two workflows recover without doubling their 15-record allowance" do
+    queues = ["queue:901:902:903:0", "queue:901:904:903:0"]
+
+    for queue <- queues, n <- 1..45 do
+      admit("recovery-#{queue}-#{n}", %{queue_id: queue, max_throughput: "15"})
+    end
+
+    {:ok, abandoned} = DispatchStore.claim(901)
+    assert Enum.frequencies_by(abandoned.actions, & &1.queue_id) == Map.new(queues, &{&1, 15})
+
+    Repo.query!("UPDATE dispatch_portals SET lease_until=now()-interval '1 second'")
+    Repo.update_all(ActionExecution, set: [on_hold_until: DateTime.add(DateTime.utc_now(), -1)])
+    for queue <- queues, do: due(queue)
+
+    {:ok, recovered} = DispatchStore.claim(901)
+    assert Enum.frequencies_by(recovered.actions, & &1.queue_id) == Map.new(queues, &{&1, 15})
+    assert MapSet.new(recovered.actions, & &1.id) == MapSet.new(abandoned.actions, & &1.id)
+    assert {:error, :stale_claim} = DispatchStore.finish(abandoned, :ok)
+    assert {:ok, _} = DispatchStore.finish(recovered, :ok)
+    assert {:ok, nil} = DispatchStore.claim(901)
+    assert DispatchStore.ready_portals(16) == []
+
+    for queue <- queues, do: due(queue)
+    {:ok, fresh} = DispatchStore.claim(901)
+    assert Enum.frequencies_by(fresh.actions, & &1.queue_id) == Map.new(queues, &{&1, 15})
+
+    assert MapSet.disjoint?(
+             MapSet.new(fresh.actions, & &1.id),
+             MapSet.new(recovered.actions, & &1.id)
+           )
+  end
+
   test "daily allowance survives a new claimant and completed actions" do
     for n <- 1..5, do: admit("daily-#{n}", %{period: "days"})
     {:ok, batch} = DispatchStore.claim(901)
@@ -13,6 +45,61 @@ defmodule Throttle.DispatchStoreTest do
     due()
     assert {:ok, next} = DispatchStore.claim(901)
     assert length(next.actions) == 2
+  end
+
+  test "retry waits for delivery capacity without spending a fresh reservation" do
+    for n <- 1..3, do: admit("retry-budget-#{n}", %{max_throughput: "1", period: "days"})
+    {:ok, first} = DispatchStore.claim(901)
+    assert {:ok, _} = DispatchStore.finish(first, {:retry, "transport"})
+    Repo.update_all(ActionExecution, set: [on_hold_until: DateTime.add(DateTime.utc_now(), -1)])
+    assert {:ok, nil} = DispatchStore.claim(901)
+    assert DispatchStore.ready_portals(16) == []
+
+    # Advance only delivery time: a retry must not create a fresh reservation.
+    original =
+      Repo.query!("SELECT next_run_at, budget_remaining, budget_through_id FROM dispatch_queues").rows
+
+    Repo.query!("UPDATE dispatch_queues SET delivery_window_until=now()-interval '1 second'")
+    {:ok, retry} = DispatchStore.claim(901)
+    assert Enum.map(retry.actions, & &1.id) == Enum.map(first.actions, & &1.id)
+
+    assert Repo.query!(
+             "SELECT next_run_at, budget_remaining, budget_through_id FROM dispatch_queues"
+           ).rows == original
+
+    assert {:ok, _} = DispatchStore.finish(retry, :ok)
+    assert {:ok, nil} = DispatchStore.claim(901)
+  end
+
+  test "mixed fresh and recovered actions share the same delivery allowance" do
+    for n <- 1..8, do: admit("mixed-#{n}", %{max_throughput: "3"})
+    {:ok, first} = DispatchStore.claim(901)
+    assert {:ok, _} = DispatchStore.finish(first, {:retry, "transport"})
+
+    # Only one old callback is ready to retry; the other two remain on hold.
+    Repo.update_all(from(a in ActionExecution, where: a.id == ^hd(first.actions).id),
+      set: [on_hold_until: DateTime.add(DateTime.utc_now(), -1)]
+    )
+
+    due()
+    {:ok, mixed} = DispatchStore.claim(901)
+    assert length(mixed.actions) == 3
+    assert Enum.count(mixed.actions, & &1.rate_reserved) == 1
+    assert {:ok, _} = DispatchStore.finish(mixed, :ok)
+    # A remaining fresh reservation cannot bypass the spent delivery budget.
+    assert {:ok, nil} = DispatchStore.claim(901)
+  end
+
+  test "lowering throughput cannot reset an already spent delivery allowance" do
+    for n <- 1..6, do: admit("lower-#{n}", %{max_throughput: "3", period: "days"})
+    {:ok, first} = DispatchStore.claim(901)
+    assert {:ok, _} = DispatchStore.finish(first, :ok)
+    admit("lower-new", %{max_throughput: "1", period: "days"})
+    assert {:ok, nil} = DispatchStore.claim(901)
+    assert DispatchStore.ready_portals(16) == []
+    due()
+    {:ok, next} = DispatchStore.claim(901)
+    assert length(next.actions) == 1
   end
 
   test "another instance cannot claim while a portal delivery is in flight" do
