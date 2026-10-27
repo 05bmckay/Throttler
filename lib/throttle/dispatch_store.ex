@@ -15,6 +15,7 @@ defmodule Throttle.DispatchStore do
         AND EXISTS (
           SELECT 1 FROM dispatch_queues q JOIN action_executions a ON a.queue_id = q.queue_id
           WHERE q.portal_id = p.portal_id AND NOT a.processed AND NOT a.permanently_failed
+            AND (q.delivery_window_until <= $2 OR q.delivery_count < q.max_throughput)
             AND (a.expires_at IS NULL OR a.expires_at > $2)
             AND (a.on_hold_until IS NULL OR a.on_hold_until <= $2)
             AND (a.rate_reserved OR q.next_run_at <= $2
@@ -51,8 +52,10 @@ defmodule Throttle.DispatchStore do
     queues =
       Repo.query!(
         """
-        SELECT queue_id, max_throughput, interval_ms, next_run_at, budget_remaining, budget_through_id
-        FROM dispatch_queues q WHERE portal_id = $1 AND EXISTS (
+        SELECT queue_id, max_throughput, interval_ms, next_run_at, budget_remaining, budget_through_id,
+          delivery_window_until, delivery_count
+        FROM dispatch_queues q WHERE portal_id = $1
+          AND (delivery_window_until <= $2 OR delivery_count < max_throughput) AND EXISTS (
           SELECT 1 FROM action_executions a WHERE a.queue_id = q.queue_id
             AND NOT a.processed AND NOT a.permanently_failed
             AND (a.expires_at IS NULL OR a.expires_at > $2)
@@ -86,6 +89,42 @@ defmodule Throttle.DispatchStore do
   end
 
   defp claim_queue(
+         [queue_id, throughput, interval, next_run, budget, cutoff, window_until, count],
+         capacity,
+         token,
+         lease,
+         now
+       ) do
+    {window_until, count} =
+      if DateTime.compare(DateTime.from_naive!(window_until, "Etc/UTC"), now) != :gt,
+        do: {DateTime.add(now, interval, :millisecond), 0},
+        else: {window_until, count}
+
+    # Reservation identity survives retries. Delivery capacity does not: both
+    # recovered and fresh actions share a persisted per-interval burst limit.
+    # The portal and queue locks serialize this budget across all dispatchers.
+    capacity = min(capacity, max(throughput - count, 0))
+
+    actions =
+      claim_queue_actions(
+        [queue_id, throughput, interval, next_run, budget, cutoff],
+        capacity,
+        token,
+        lease,
+        now
+      )
+
+    if actions != [] do
+      Repo.query!(
+        "UPDATE dispatch_queues SET delivery_window_until=$2, delivery_count=$3 WHERE queue_id=$1",
+        [queue_id, window_until, count + length(actions)]
+      )
+    end
+
+    actions
+  end
+
+  defp claim_queue_actions(
          [queue_id, throughput, interval, next_run, budget, cutoff],
          capacity,
          token,

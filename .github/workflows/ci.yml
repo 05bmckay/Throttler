@@ -33,5 +33,9 @@ jobs:
         run: |
           createdb -h localhost -U postgres throttle_readiness_upgrade
           TEST_DATABASE_URL=ecto://postgres:postgres@localhost/throttle_readiness_upgrade MIX_ENV=test mix run --no-start scripts/rehearse_upgrade.exs
+      - name: Rehearse recovery delivery budget migration
+        run: |
+          createdb -h localhost -U postgres throttle_readiness_recovery
+          TEST_DATABASE_URL=ecto://postgres:postgres@localhost/throttle_readiness_recovery MIX_ENV=test mix run --no-start scripts/rehearse_recovery_budget.exs
       - run: MIX_ENV=prod mix compile --warnings-as-errors
       - run: MIX_ENV=prod mix release --overwrite

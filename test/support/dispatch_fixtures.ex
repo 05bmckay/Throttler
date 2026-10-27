@@ -20,7 +20,7 @@ defmodule Throttle.DispatchFixtures do
 
   def due(queue_id \\ "queue:901:902:903:0") do
     Throttle.Repo.query!(
-      "UPDATE dispatch_queues SET next_run_at=now()-interval '1 second' WHERE queue_id=$1",
+      "UPDATE dispatch_queues SET next_run_at=now()-interval '1 second', delivery_window_until=now()-interval '1 second' WHERE queue_id=$1",
       [queue_id]
     )
   end
