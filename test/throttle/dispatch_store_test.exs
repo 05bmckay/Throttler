@@ -55,20 +55,67 @@ defmodule Throttle.DispatchStoreTest do
     assert {:ok, nil} = DispatchStore.claim(901)
     assert DispatchStore.ready_portals(16) == []
 
-    # Advance only delivery time: a retry must not create a fresh reservation.
-    original =
-      Repo.query!("SELECT next_run_at, budget_remaining, budget_through_id FROM dispatch_queues").rows
-
+    # Advance delivery window: the retry runs first and consumes the full window
+    # without letting fresh work through in the same day.
     Repo.query!("UPDATE dispatch_queues SET delivery_window_until=now()-interval '1 second'")
     {:ok, retry} = DispatchStore.claim(901)
     assert Enum.map(retry.actions, & &1.id) == Enum.map(first.actions, & &1.id)
-
-    assert Repo.query!(
-             "SELECT next_run_at, budget_remaining, budget_through_id FROM dispatch_queues"
-           ).rows == original
-
     assert {:ok, _} = DispatchStore.finish(retry, :ok)
     assert {:ok, nil} = DispatchStore.claim(901)
+    assert DispatchStore.ready_portals(16) == []
+  end
+
+  test "partial first window allows subsequent arrivals up to the full daily allowance" do
+    # Reproduces bulk enrollment arriving over multiple seconds into a new 50/day queue:
+    # 3 arrive first, then 117 more arrive moments later.
+    for n <- 1..3,
+        do: admit("bulk-#{n}", %{max_throughput: "50", time: "1", period: "days"})
+
+    {:ok, first} = DispatchStore.claim(901)
+    assert length(first.actions) == 3
+    assert {:ok, _} = DispatchStore.finish(first, :ok)
+
+    %{rows: [[initial_window, 3]]} =
+      Repo.query!("SELECT delivery_window_until, delivery_count FROM dispatch_queues")
+
+    for n <- 4..120,
+        do: admit("bulk-#{n}", %{max_throughput: "50", time: "1", period: "days"})
+
+    {:ok, rest_of_day_one} = DispatchStore.claim(901)
+    assert length(rest_of_day_one.actions) == 47
+    assert {:ok, _} = DispatchStore.finish(rest_of_day_one, :ok)
+
+    # Window deadline stays anchored to the first send; remaining 70 wait for day 2.
+    assert %{rows: [[^initial_window, 50]]} =
+             Repo.query!("SELECT delivery_window_until, delivery_count FROM dispatch_queues")
+
+    assert {:ok, nil} = DispatchStore.claim(901)
+    assert DispatchStore.ready_portals(16) == []
+
+    due()
+    {:ok, day_two} = DispatchStore.claim(901)
+    assert length(day_two.actions) == 50
+    assert {:ok, _} = DispatchStore.finish(day_two, :ok)
+    assert {:ok, nil} = DispatchStore.claim(901)
+
+    due()
+    {:ok, day_three} = DispatchStore.claim(901)
+    assert length(day_three.actions) == 20
+    assert {:ok, _} = DispatchStore.finish(day_three, :ok)
+    assert {:ok, nil} = DispatchStore.claim(901)
+  end
+
+  test "organic one-by-one arrivals use the full configured window before blocking" do
+    for n <- 1..3 do
+      admit("trickle-#{n}", %{max_throughput: "3", period: "days"})
+      {:ok, batch} = DispatchStore.claim(901)
+      assert length(batch.actions) == 1
+      assert {:ok, _} = DispatchStore.finish(batch, :ok)
+    end
+
+    admit("trickle-4", %{max_throughput: "3", period: "days"})
+    assert {:ok, nil} = DispatchStore.claim(901)
+    assert DispatchStore.ready_portals(16) == []
   end
 
   test "mixed fresh and recovered actions share the same delivery allowance" do
@@ -110,19 +157,23 @@ defmodule Throttle.DispatchStoreTest do
     assert DispatchStore.ready_portals(16) == []
   end
 
-  test "large reservation drains in API sized chunks but excludes new arrivals" do
+  test "large window allowance drains in API sized chunks and caps at max_throughput" do
     for n <- 1..205, do: admit("large-#{n}", %{max_throughput: "250", period: "days"})
     {:ok, first} = DispatchStore.claim(901)
     assert length(first.actions) == 100
     DispatchStore.finish(first, :ok)
-    admit("later", %{max_throughput: "250", period: "days"})
+
+    for n <- 206..265, do: admit("large-#{n}", %{max_throughput: "250", period: "days"})
     {:ok, second} = DispatchStore.claim(901)
     assert length(second.actions) == 100
     DispatchStore.finish(second, :ok)
+
     {:ok, third} = DispatchStore.claim(901)
-    assert length(third.actions) == 5
+    assert length(third.actions) == 50
     DispatchStore.finish(third, :ok)
+
     assert {:ok, nil} = DispatchStore.claim(901)
+    assert DispatchStore.ready_portals(16) == []
   end
 
   test "stale owner cannot dispatch or complete after lease reclamation" do
@@ -138,16 +189,25 @@ defmodule Throttle.DispatchStoreTest do
     assert {:ok, _} = DispatchStore.finish(replacement, :ok)
   end
 
-  test "429 persists portal-wide cooldown and retains the rate reservation" do
-    admit("limited", %{period: "days"})
+  test "429 on a full daily batch refunds window budget and retries after cooldown without letting fresh work jump ahead" do
+    for n <- 1..4, do: admit("limited-#{n}", %{max_throughput: "2", period: "days"})
     {:ok, batch} = DispatchStore.claim(901)
+    assert length(batch.actions) == 2
     DispatchStore.finish(batch, {:rate_limited, 60})
     assert {:ok, nil} = DispatchStore.claim(901)
     assert DispatchStore.ready_portals(16) == []
-    Repo.query!("UPDATE dispatch_portals SET available_at=now()-interval '1 second'")
+
+    # Release only the 429 cooldown — do NOT advance delivery_window_until.
+    Repo.query!(
+      "UPDATE dispatch_portals SET available_at=timezone('UTC', now())-interval '1 second'"
+    )
+
     Repo.update_all(ActionExecution, set: [on_hold_until: DateTime.add(DateTime.utc_now(), -1)])
     {:ok, retry} = DispatchStore.claim(901)
     assert Enum.map(retry.actions, & &1.id) == Enum.map(batch.actions, & &1.id)
+    assert {:ok, _} = DispatchStore.finish(retry, :ok)
+    # Remaining 2 fresh items must still wait for the next daily window.
+    assert {:ok, nil} = DispatchStore.claim(901)
   end
 
   test "transient failure has one attempt owner and no new rate charge" do

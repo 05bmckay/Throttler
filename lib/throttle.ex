@@ -41,7 +41,20 @@ defmodule Throttle do
 
         Repo.query!(
           """
-          UPDATE dispatch_queues SET max_throughput=$3, interval_ms=$4
+          UPDATE dispatch_queues
+          SET
+            max_throughput = $3,
+            interval_ms = $4,
+            delivery_window_until = CASE
+              WHEN $4 < interval_ms AND delivery_window_until > timezone('UTC', clock_timestamp())
+              THEN delivery_window_until - (interval_ms - $4) * interval '1 millisecond'
+              ELSE delivery_window_until
+            END,
+            next_run_at = CASE
+              WHEN $4 < interval_ms AND delivery_window_until > timezone('UTC', clock_timestamp())
+              THEN delivery_window_until - (interval_ms - $4) * interval '1 millisecond'
+              ELSE next_run_at
+            END
           WHERE portal_id=$1 AND split_part(queue_id, ':', 4)=$2
           """,
           [config.portal_id, config.action_id, rate.max_throughput, rate.interval_ms]

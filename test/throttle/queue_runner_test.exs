@@ -104,6 +104,12 @@ defmodule Throttle.QueueRunnerTest do
     Process.cancel_timer(timer)
   end
 
+  test "ready_portals excludes locally in-flight portals while returning other ready portals" do
+    admit("portal-901", %{queue_id: "queue:901:902:903:0"})
+    admit("portal-902", %{queue_id: "queue:902:902:903:0"})
+    assert DispatchStore.ready_portals(16, [901]) == [902]
+  end
+
   test "a paused poll schedules one replacement timer without claiming work" do
     admit("paused")
     assert {:noreply, next} = Dispatcher.handle_info(:poll, state())

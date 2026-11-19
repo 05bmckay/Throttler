@@ -32,6 +32,7 @@ defmodule Throttle.OAuthManager do
         |> Repo.insert(on_conflict: :replace_all, conflict_target: :portal_id)
         |> case do
           {:ok, token} ->
+            release_auth_holds(token.portal_id)
             Logger.debug("Token stored successfully for portal_id: #{token.portal_id}")
             {:ok, token}
 
@@ -248,8 +249,21 @@ defmodule Throttle.OAuthManager do
         Logger.debug("Token refresh successful")
 
         case Jason.decode(resp_body) do
-          {:ok, decoded_body} -> {:ok, decoded_body}
-          {:error, _} -> {:error, "Failed to decode refresh token response"}
+          {:ok,
+           %{
+             "access_token" => access,
+             "refresh_token" => refresh,
+             "expires_in" => expires_in
+           } = decoded_body}
+          when is_binary(access) and access != "" and is_binary(refresh) and refresh != "" and
+                 is_integer(expires_in) and expires_in > 0 ->
+            {:ok, decoded_body}
+
+          {:ok, _} ->
+            {:error, "Malformed refresh token response"}
+
+          {:error, _} ->
+            {:error, "Failed to decode refresh token response"}
         end
 
       {:ok, %Finch.Response{status: status}} ->
@@ -261,6 +275,41 @@ defmodule Throttle.OAuthManager do
         Logger.error("HubSpot API request failed: #{Exception.message(exception)}")
         {:error, "HubSpot API request failed: #{Exception.message(exception)}"}
     end
+  end
+
+  @auth_failure_reasons ~w(
+    token_not_found
+    token_refresh_failed
+    token_refresh_unavailable
+    token_update_failed
+    decryption_failed
+    unauthorized
+  )
+
+  defp release_auth_holds(portal_id) do
+    Repo.query!(
+      """
+      UPDATE dispatch_portals
+      SET available_at = LEAST(available_at, timezone('UTC', clock_timestamp()))
+      WHERE portal_id = $1
+      """,
+      [portal_id]
+    )
+
+    Repo.query!(
+      """
+      UPDATE action_executions a
+      SET on_hold_until = NULL
+      FROM dispatch_queues q
+      WHERE a.queue_id = q.queue_id
+        AND q.portal_id = $1
+        AND NOT a.processed
+        AND NOT a.permanently_failed
+        AND a.claim_token IS NULL
+        AND a.last_failure_reason = ANY($2::text[])
+      """,
+      [portal_id, @auth_failure_reasons]
+    )
   end
 
   defp calculate_expiration(expires_in) do

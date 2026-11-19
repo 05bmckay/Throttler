@@ -95,8 +95,23 @@ defmodule Throttle.Admission do
         """
         INSERT INTO dispatch_queues (queue_id, portal_id, max_throughput, interval_ms, next_run_at)
         VALUES ($1, $2, $3, $4, timezone('UTC', clock_timestamp()))
-        ON CONFLICT (queue_id) DO UPDATE SET max_throughput = EXCLUDED.max_throughput,
-          interval_ms = EXCLUDED.interval_ms
+        ON CONFLICT (queue_id) DO UPDATE SET
+          max_throughput = EXCLUDED.max_throughput,
+          interval_ms = EXCLUDED.interval_ms,
+          delivery_window_until = CASE
+            WHEN EXCLUDED.interval_ms < dispatch_queues.interval_ms
+              AND dispatch_queues.delivery_window_until > timezone('UTC', clock_timestamp())
+            THEN dispatch_queues.delivery_window_until
+              - (dispatch_queues.interval_ms - EXCLUDED.interval_ms) * interval '1 millisecond'
+            ELSE dispatch_queues.delivery_window_until
+          END,
+          next_run_at = CASE
+            WHEN EXCLUDED.interval_ms < dispatch_queues.interval_ms
+              AND dispatch_queues.delivery_window_until > timezone('UTC', clock_timestamp())
+            THEN dispatch_queues.delivery_window_until
+              - (dispatch_queues.interval_ms - EXCLUDED.interval_ms) * interval '1 millisecond'
+            ELSE dispatch_queues.next_run_at
+          END
         WHERE (dispatch_queues.max_throughput, dispatch_queues.interval_ms)
           IS DISTINCT FROM (EXCLUDED.max_throughput, EXCLUDED.interval_ms)
         """,

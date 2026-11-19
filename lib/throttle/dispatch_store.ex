@@ -7,22 +7,23 @@ defmodule Throttle.DispatchStore do
   @lease_seconds 180
   def lease_seconds, do: @lease_seconds
 
-  def ready_portals(limit) do
+  def ready_portals(limit, exclude_portals \\ []) do
+    now_naive = db_now() |> DateTime.to_naive()
+
     Repo.query!(
       """
       SELECT p.portal_id FROM dispatch_portals p
       WHERE p.available_at <= $2 AND (p.lease_until IS NULL OR p.lease_until <= $2)
+        AND NOT (p.portal_id = ANY($3::bigint[]))
         AND EXISTS (
           SELECT 1 FROM dispatch_queues q JOIN action_executions a ON a.queue_id = q.queue_id
           WHERE q.portal_id = p.portal_id AND NOT a.processed AND NOT a.permanently_failed
             AND (q.delivery_window_until <= $2 OR q.delivery_count < q.max_throughput)
             AND (a.expires_at IS NULL OR a.expires_at > $2)
             AND (a.on_hold_until IS NULL OR a.on_hold_until <= $2)
-            AND (a.rate_reserved OR q.next_run_at <= $2
-              OR (q.budget_remaining > 0 AND a.id <= q.budget_through_id))
         ) ORDER BY p.available_at, p.portal_id LIMIT $1
       """,
-      [limit, db_now()]
+      [limit, now_naive, exclude_portals]
     ).rows
     |> List.flatten()
   end
@@ -30,6 +31,7 @@ defmodule Throttle.DispatchStore do
   def claim(portal_id) do
     Repo.transaction(fn ->
       now = db_now()
+      now_naive = DateTime.to_naive(now)
 
       case Repo.query!(
              """
@@ -37,7 +39,7 @@ defmodule Throttle.DispatchStore do
                AND available_at <= $2 AND (lease_until IS NULL OR lease_until <= $2)
              FOR UPDATE SKIP LOCKED
              """,
-             [portal_id, now]
+             [portal_id, now_naive]
            ).rows do
         [] -> nil
         [[_, limit]] -> claim_locked(portal_id, now, limit)
@@ -48,32 +50,40 @@ defmodule Throttle.DispatchStore do
   defp claim_locked(portal_id, now, limit) do
     token = Ecto.UUID.generate()
     lease_until = DateTime.add(now, @lease_seconds, :second)
+    now_naive = DateTime.to_naive(now)
+    lease_naive = DateTime.to_naive(lease_until)
 
     queues =
       Repo.query!(
         """
-        SELECT queue_id, max_throughput, interval_ms, next_run_at, budget_remaining, budget_through_id,
-          delivery_window_until, delivery_count
+        SELECT queue_id, max_throughput, interval_ms, delivery_window_until, delivery_count
         FROM dispatch_queues q WHERE portal_id = $1
           AND (delivery_window_until <= $2 OR delivery_count < max_throughput) AND EXISTS (
           SELECT 1 FROM action_executions a WHERE a.queue_id = q.queue_id
             AND NOT a.processed AND NOT a.permanently_failed
             AND (a.expires_at IS NULL OR a.expires_at > $2)
             AND (a.on_hold_until IS NULL OR a.on_hold_until <= $2)
-            AND (a.rate_reserved OR q.next_run_at <= $2
-              OR (q.budget_remaining > 0 AND a.id <= q.budget_through_id))
-        ) ORDER BY next_run_at, queue_id LIMIT 100 FOR UPDATE
+        ) ORDER BY delivery_window_until, queue_id LIMIT 100 FOR UPDATE
         """,
-        [portal_id, now]
+        [portal_id, now_naive]
       ).rows
 
-    actions =
-      Enum.reduce_while(queues, [], fn queue, acc ->
+    {actions, queue_windows} =
+      Enum.reduce_while(queues, {[], %{}}, fn queue, {acc, windows} ->
         remaining = limit - length(acc)
 
-        if remaining == 0,
-          do: {:halt, acc},
-          else: {:cont, acc ++ claim_queue(queue, remaining, token, lease_until, now)}
+        if remaining == 0 do
+          {:halt, {acc, windows}}
+        else
+          case claim_queue(queue, remaining, token, lease_until, now) do
+            {[], _window_until} ->
+              {:cont, {acc, windows}}
+
+            {claimed, window_until} ->
+              [queue_id | _] = queue
+              {:cont, {acc ++ claimed, Map.put(windows, queue_id, window_until)}}
+          end
+        end
       end)
 
     if actions == [] do
@@ -81,56 +91,64 @@ defmodule Throttle.DispatchStore do
     else
       Repo.query!(
         "UPDATE dispatch_portals SET claim_token=$2, lease_until=$3 WHERE portal_id=$1",
-        [portal_id, Ecto.UUID.dump!(token), lease_until]
+        [portal_id, Ecto.UUID.dump!(token), lease_naive]
       )
 
-      %{portal_id: portal_id, token: token, actions: actions, lease_until: lease_until}
+      %{
+        portal_id: portal_id,
+        token: token,
+        actions: actions,
+        lease_until: lease_until,
+        queue_windows: queue_windows
+      }
     end
   end
 
   defp claim_queue(
-         [queue_id, throughput, interval, next_run, budget, cutoff, window_until, count],
+         [queue_id, throughput, interval, window_until_naive, count],
          capacity,
          token,
          lease,
          now
        ) do
+    window_until = DateTime.from_naive!(window_until_naive, "Etc/UTC")
+
     {window_until, count} =
-      if DateTime.compare(DateTime.from_naive!(window_until, "Etc/UTC"), now) != :gt,
+      if DateTime.compare(window_until, now) != :gt,
         do: {DateTime.add(now, interval, :millisecond), 0},
         else: {window_until, count}
 
-    # Reservation identity survives retries. Delivery capacity does not: both
-    # recovered and fresh actions share a persisted per-interval burst limit.
-    # The portal and queue locks serialize this budget across all dispatchers.
+    # One persisted per-interval burst allowance shared by retries and fresh work.
+    # Fresh arrivals within an open window may use remaining unspent capacity
+    # (max_throughput - delivery_count) up to the configured ceiling, while
+    # retries/recoveries are always prioritized ahead of fresh work.
     capacity = min(capacity, max(throughput - count, 0))
 
     actions =
-      claim_queue_actions(
-        [queue_id, throughput, interval, next_run, budget, cutoff],
-        capacity,
-        token,
-        lease,
-        now
-      )
+      if capacity > 0 do
+        claim_queue_actions(queue_id, capacity, token, lease, now)
+      else
+        []
+      end
 
     if actions != [] do
+      window_naive = DateTime.to_naive(window_until)
+
       Repo.query!(
-        "UPDATE dispatch_queues SET delivery_window_until=$2, delivery_count=$3 WHERE queue_id=$1",
-        [queue_id, window_until, count + length(actions)]
+        """
+        UPDATE dispatch_queues
+        SET delivery_window_until=$2, delivery_count=$3,
+            next_run_at=$2, budget_remaining=0, budget_through_id=0
+        WHERE queue_id=$1
+        """,
+        [queue_id, window_naive, count + length(actions)]
       )
     end
 
-    actions
+    {actions, window_until}
   end
 
-  defp claim_queue_actions(
-         [queue_id, throughput, interval, next_run, budget, cutoff],
-         capacity,
-         token,
-         lease,
-         now
-       ) do
+  defp claim_queue_actions(queue_id, capacity, token, lease, now) do
     base =
       from a in ActionExecution,
         where: a.queue_id == ^queue_id and not a.processed and not a.permanently_failed,
@@ -148,54 +166,18 @@ defmodule Throttle.DispatchStore do
 
     room = capacity - length(retries)
 
-    {budget, cutoff} =
-      if room > 0 and DateTime.compare(DateTime.from_naive!(next_run, "Etc/UTC"), now) != :gt do
-        ids =
-          Repo.all(
-            from a in base,
-              where: not a.rate_reserved,
-              order_by: [a.inserted_at, a.id],
-              limit: ^throughput,
-              select: a.id
-          )
-
-        if ids == [] do
-          {0, 0}
-        else
-          next_run = DateTime.add(now, interval, :millisecond)
-
-          Repo.query!(
-            "UPDATE dispatch_queues SET next_run_at=$2, budget_remaining=$3, budget_through_id=$4 WHERE queue_id=$1",
-            [queue_id, next_run, length(ids), Enum.max(ids)]
-          )
-
-          {length(ids), Enum.max(ids)}
-        end
-      else
-        {budget, cutoff}
-      end
-
-    fresh_limit = min(room, budget)
-
     fresh =
-      if fresh_limit > 0 do
+      if room > 0 do
         Repo.all(
           from a in base,
-            where: not a.rate_reserved and a.id <= ^cutoff,
+            where: not a.rate_reserved,
             order_by: [a.inserted_at, a.id],
-            limit: ^fresh_limit,
+            limit: ^room,
             lock: "FOR UPDATE SKIP LOCKED"
         )
       else
         []
       end
-
-    if fresh != [] do
-      Repo.query!(
-        "UPDATE dispatch_queues SET budget_remaining=GREATEST(budget_remaining-$2,0) WHERE queue_id=$1",
-        [queue_id, length(fresh)]
-      )
-    end
 
     actions = retries ++ fresh
     ids = Enum.map(actions, & &1.id)
@@ -231,6 +213,7 @@ defmodule Throttle.DispatchStore do
   def finish(batch, result) do
     Repo.transaction(fn ->
       now = db_now()
+      now_naive = DateTime.to_naive(now)
       # Lock the portal first in every transition. Late results from replaced
       # tasks cannot release the new owner's portal or mutate its actions.
       owned =
@@ -239,7 +222,7 @@ defmodule Throttle.DispatchStore do
           SELECT portal_id FROM dispatch_portals
           WHERE portal_id=$1 AND claim_token=$2 AND lease_until > $3 FOR UPDATE
           """,
-          [batch.portal_id, Ecto.UUID.dump!(batch.token), now]
+          [batch.portal_id, Ecto.UUID.dump!(batch.token), now_naive]
         ).rows
 
       if owned == [], do: Repo.rollback(:stale_claim)
@@ -254,18 +237,19 @@ defmodule Throttle.DispatchStore do
       if match?({:isolate, _}, result) do
         Repo.query!(
           "UPDATE dispatch_portals SET isolated_until=$2 WHERE portal_id=$1",
-          [batch.portal_id, DateTime.add(now, 300, :second)]
+          [batch.portal_id, DateTime.to_naive(DateTime.add(now, 300, :second))]
         )
       end
 
-      retry_at = apply_result(query, result, now)
+      {retry_at, refunded_by_queue} = apply_result(query, result, now)
+      refund_delivery_counts(Map.get(batch, :queue_windows, %{}), refunded_by_queue, now_naive)
 
       Repo.query!(
         """
         UPDATE dispatch_portals SET claim_token=NULL, lease_until=NULL, available_at=$2
         WHERE portal_id=$1
         """,
-        [batch.portal_id, retry_at]
+        [batch.portal_id, DateTime.to_naive(retry_at)]
       )
     end)
   end
@@ -282,17 +266,19 @@ defmodule Throttle.DispatchStore do
       ]
     )
 
-    now
+    {now, %{}}
   end
 
   defp apply_result(query, {:rate_limited, seconds}, now) do
     until = DateTime.add(now, max(seconds, 1), :second)
 
-    Repo.update_all(query,
-      set: [claim_token: nil, on_hold_until: until, last_failure_reason: "rate_limited"]
-    )
+    {_count, queue_ids} =
+      Repo.update_all(
+        from(a in query, select: a.queue_id),
+        set: [claim_token: nil, on_hold_until: until, last_failure_reason: "rate_limited"]
+      )
 
-    until
+    {until, Enum.frequencies(queue_ids)}
   end
 
   defp apply_result(query, {:permanent, reason}, now) do
@@ -307,14 +293,96 @@ defmodule Throttle.DispatchStore do
       inc: [total_attempts: 1]
     )
 
-    now
+    {now, %{}}
   end
 
-  defp apply_result(query, {:isolate, reason}, now),
-    do: apply_result(query, {:retry, reason}, now)
+  defp apply_result(query, {:isolate, reason}, now) do
+    # Multi-item 4xx rejected the entire batch before HubSpot advanced any
+    # callback. Release immediately (no backoff hold) so 1-by-1 isolation
+    # completes inside the 300s isolated_until window, and refund delivery_count
+    # for still-retryable rows in the same window.
+    {_count, rows} =
+      Repo.update_all(
+        from(a in query,
+          select: {a.queue_id, a.permanently_failed},
+          update: [
+            set: [
+              claim_token: nil,
+              on_hold_until: nil,
+              last_failure_reason: ^reason,
+              consecutive_failures: fragment("consecutive_failures + 1"),
+              total_attempts: fragment("total_attempts + 1"),
+              permanently_failed: fragment("total_attempts + 1 >= 20"),
+              completed_at:
+                fragment(
+                  "CASE WHEN total_attempts + 1 >= 20 THEN ? ELSE completed_at END",
+                  type(^now, :utc_datetime_usec)
+                )
+            ]
+          ]
+        ),
+        []
+      )
+
+    refunded =
+      rows
+      |> Enum.reject(fn {_queue_id, failed} -> failed end)
+      |> Enum.map(fn {queue_id, _failed} -> queue_id end)
+      |> Enum.frequencies()
+
+    {now, refunded}
+  end
+
+  defp apply_result(query, {:auth_retry, reason}, now) do
+    # Definite pre-HTTP / auth rejection: HubSpot advanced zero callbacks.
+    # Back off the entire portal until the earliest retryable row wakes up so
+    # fresh work cannot consume refunded capacity before retries reclaim it.
+    {_count, rows} =
+      Repo.update_all(
+        from(a in query,
+          select: {a.queue_id, a.permanently_failed, a.on_hold_until},
+          update: [
+            set: [
+              claim_token: nil,
+              last_failure_reason: ^reason,
+              consecutive_failures: fragment("consecutive_failures + 1"),
+              total_attempts: fragment("total_attempts + 1"),
+              permanently_failed: fragment("total_attempts + 1 >= 20"),
+              completed_at:
+                fragment(
+                  "CASE WHEN total_attempts + 1 >= 20 THEN ? ELSE completed_at END",
+                  type(^now, :utc_datetime_usec)
+                ),
+              on_hold_until:
+                fragment(
+                  "CASE WHEN total_attempts + 1 >= 20 THEN NULL ELSE ? + LEAST(1800, 2 * power(2, LEAST(total_attempts, 10))) * interval '1 second' END",
+                  type(^now, :utc_datetime_usec)
+                )
+            ]
+          ]
+        ),
+        []
+      )
+
+    retryable = Enum.reject(rows, fn {_queue_id, failed, _hold} -> failed end)
+
+    refunded =
+      retryable
+      |> Enum.map(fn {queue_id, _failed, _hold} -> queue_id end)
+      |> Enum.frequencies()
+
+    retry_at =
+      case retryable |> Enum.map(fn {_, _, hold} -> hold end) |> Enum.reject(&is_nil/1) do
+        [] -> now
+        holds -> Enum.min(holds, DateTime)
+      end
+
+    {retry_at, refunded}
+  end
 
   defp apply_result(query, {:retry, reason}, now) do
-    # A retry consumes its original rate reservation, never fresh queue quota.
+    # Ambiguous failure: HubSpot may have already accepted the request.
+    # Keep delivery_count spent so retries share the per-interval allowance.
     Repo.update_all(
       from(a in query,
         update: [
@@ -325,11 +393,14 @@ defmodule Throttle.DispatchStore do
             total_attempts: fragment("total_attempts + 1"),
             permanently_failed: fragment("total_attempts + 1 >= 20"),
             completed_at:
-              fragment("CASE WHEN total_attempts + 1 >= 20 THEN ? ELSE completed_at END", ^now),
+              fragment(
+                "CASE WHEN total_attempts + 1 >= 20 THEN ? ELSE completed_at END",
+                type(^now, :utc_datetime_usec)
+              ),
             on_hold_until:
               fragment(
-                "?::timestamp + LEAST(1800, 2 * power(2, LEAST(total_attempts, 10))) * interval '1 second'",
-                ^now
+                "CASE WHEN total_attempts + 1 >= 20 THEN NULL ELSE ? + LEAST(1800, 2 * power(2, LEAST(total_attempts, 10))) * interval '1 second' END",
+                type(^now, :utc_datetime_usec)
               )
           ]
         ]
@@ -337,7 +408,25 @@ defmodule Throttle.DispatchStore do
       []
     )
 
-    now
+    {now, %{}}
+  end
+
+  defp refund_delivery_counts(queue_windows, refunded_by_queue, now_naive) do
+    refunded_by_queue
+    |> Enum.sort_by(&elem(&1, 0))
+    |> Enum.each(fn {queue_id, count} ->
+      with true <- count > 0,
+           %DateTime{} = window_until <- Map.get(queue_windows, queue_id) do
+        Repo.query!(
+          """
+          UPDATE dispatch_queues
+          SET delivery_count = GREATEST(delivery_count - $3, 0)
+          WHERE queue_id = $1 AND delivery_window_until = $2 AND delivery_window_until > $4
+          """,
+          [queue_id, DateTime.to_naive(window_until), count, now_naive]
+        )
+      end
+    end)
   end
 
   def expire do
@@ -359,7 +448,7 @@ defmodule Throttle.DispatchStore do
   end
 
   defp db_now do
-    %{rows: [[now]]} = Repo.query!("SELECT clock_timestamp()")
-    now
+    %{rows: [[now]]} = Repo.query!("SELECT timezone('UTC', clock_timestamp())")
+    DateTime.from_naive!(now, "Etc/UTC")
   end
 end

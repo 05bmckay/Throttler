@@ -60,6 +60,16 @@ defmodule Throttle.ActionQueriesTest do
     assert DateTime.diff(row.on_hold_until, DateTime.utc_now()) in 59..60
   end
 
+  test "retry backoff holds remain effective under a non-UTC database session" do
+    Repo.query!("SET LOCAL TIME ZONE 'America/Chicago'")
+    admit("retry-tz", %{max_throughput: "2", period: "days"})
+    {:ok, batch} = DispatchStore.claim(901)
+    assert {:ok, _} = DispatchStore.finish(batch, {:retry, "transport"})
+    assert DispatchStore.ready_portals(16) == []
+    row = Repo.get!(ActionExecution, hd(batch.actions).id)
+    assert DateTime.diff(row.on_hold_until, DateTime.utc_now()) in 1..5
+  end
+
   test "latest configuration survives processing of its source action" do
     admit("old", %{max_throughput: "1"})
     newest = admit("new", %{max_throughput: "7"})

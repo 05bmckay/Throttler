@@ -83,17 +83,77 @@ defmodule Throttle.PortalQueueTest do
     assert Repo.get!(ActionExecution, hd(batch.actions).id).total_attempts == 1
   end
 
-  test "bad multi-callback request isolates callbacks instead of failing every row" do
-    stub([HTTPStub.response(400)])
-    admit("good-maybe")
-    admit("bad-maybe")
+  test "bad multi-callback request on a full daily queue isolates immediately without waiting a day" do
+    stub([HTTPStub.response(400), HTTPStub.response(204), HTTPStub.response(400)])
+    for n <- 1..4, do: admit("iso-#{n}", %{max_throughput: "2", period: "days"})
     {:ok, batch} = DispatchStore.claim(901)
+    assert length(batch.actions) == 2
     assert {:isolate, "callback_http_400"} = Delivery.run(batch)
     assert Repo.aggregate(from(a in ActionExecution, where: a.permanently_failed), :count) == 0
-    Repo.update_all(ActionExecution, set: [on_hold_until: DateTime.add(DateTime.utc_now(), -1)])
-    due()
-    {:ok, isolated} = DispatchStore.claim(901)
-    assert length(isolated.actions) == 1
+
+    # No due() and no manual on_hold_until clearing: isolated retries run 1-by-1 immediately.
+    {:ok, first_iso} = DispatchStore.claim(901)
+    assert length(first_iso.actions) == 1
+    assert hd(first_iso.actions).callback_id == "iso-1"
+    assert :ok = Delivery.run(first_iso)
+
+    {:ok, second_iso} = DispatchStore.claim(901)
+    assert length(second_iso.actions) == 1
+    assert hd(second_iso.actions).callback_id == "iso-2"
+    assert {:permanent, "callback_http_400"} = Delivery.run(second_iso)
+
+    # Full daily allowance (2) is now consumed; iso-3 and iso-4 wait for day 2.
+    assert {:ok, nil} = DispatchStore.claim(901)
+  end
+
+  test "400 uses actual owned count when another row completed before send" do
+    stub([HTTPStub.response(400)])
+    first = admit("sent-1")
+    admit("sent-2")
+    {:ok, batch} = DispatchStore.claim(901)
+    Repo.update_all(from(a in ActionExecution, where: a.id == ^first.id), set: [processed: true])
+    assert {:permanent, "callback_http_400"} = Delivery.run(batch)
+  end
+
+  test "pre-HTTP OAuth failure backs off portal, refunds daily budget, and resumes upon re-authorization" do
+    Repo.delete_all(SecureOAuthToken)
+
+    stub([
+      HTTPStub.response(200, Jason.encode!(%{"hub_id" => 901, "user" => "user@example.com"})),
+      HTTPStub.response(204)
+    ])
+
+    for n <- 1..4, do: admit("auth-#{n}", %{max_throughput: "2", period: "days"})
+    {:ok, batch} = DispatchStore.claim(901)
+    assert {:auth_retry, "token_not_found"} = Delivery.run(batch)
+
+    # Portal is backed off so fresh actions cannot steal the refunded budget.
+    assert {:ok, nil} = DispatchStore.claim(901)
+    assert DispatchStore.ready_portals(16) == []
+
+    # Re-authenticating releases the auth hold immediately.
+    assert {:ok, _} =
+             Throttle.OAuthManager.store_token(%{
+               "access_token" => "reauth-access",
+               "refresh_token" => "reauth-refresh",
+               "expires_in" => 1800
+             })
+
+    {:ok, retry} = DispatchStore.claim(901)
+    assert Enum.map(retry.actions, & &1.id) == Enum.map(batch.actions, & &1.id)
+    assert :ok = Delivery.run(retry)
+    assert {:ok, nil} = DispatchStore.claim(901)
+  end
+
+  test "malformed OAuth refresh JSON fails cleanly as auth_retry instead of crashing" do
+    Repo.update_all(from(t in SecureOAuthToken, where: t.portal_id == 901),
+      set: [expires_at: DateTime.add(DateTime.utc_now(), -10)]
+    )
+
+    stub([HTTPStub.response(200, Jason.encode!(%{"unexpected" => true}))])
+    admit("malformed-refresh", %{max_throughput: "1", period: "days"})
+    {:ok, batch} = DispatchStore.claim(901)
+    assert {:auth_retry, "token_refresh_failed"} = Delivery.run(batch)
   end
 
   defp stub(responses),
