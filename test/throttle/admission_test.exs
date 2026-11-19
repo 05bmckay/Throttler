@@ -51,6 +51,23 @@ defmodule Throttle.AdmissionTest do
     assert Repo.aggregate(ActionExecution, :count) == 0
   end
 
+  test "shortening interval_ms adjusts active window without staying frozen for the old interval" do
+    admit("long-1", %{max_throughput: "1", time: "7", period: "days"})
+    {:ok, first} = Throttle.DispatchStore.claim(901)
+    assert {:ok, _} = Throttle.DispatchStore.finish(first, :ok)
+
+    # Simulate 2 seconds elapsed since window opened under a 7-day interval.
+    Repo.query!(
+      "UPDATE dispatch_queues SET delivery_window_until = delivery_window_until - interval '2 seconds', next_run_at = next_run_at - interval '2 seconds'"
+    )
+
+    admit("short-2", %{max_throughput: "1", time: "1", period: "seconds"})
+
+    # Elapsed 2s > new 1s interval, so the queue is immediately eligible again.
+    assert {:ok, second} = Throttle.DispatchStore.claim(901)
+    assert hd(second.actions).callback_id == "short-2"
+  end
+
   test "queue write failure rolls back callback admission" do
     Repo.query!(
       "ALTER TABLE dispatch_queues ADD CONSTRAINT audit_reject_queue CHECK (portal_id != 901)"

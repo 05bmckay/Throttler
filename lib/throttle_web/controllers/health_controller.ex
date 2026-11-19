@@ -8,7 +8,7 @@ defmodule ThrottleWeb.HealthController do
          %{enabled: true} <- Throttle.Dispatcher.status(),
          {:ok, %{rows: [[true]]}} <-
            Throttle.Repo.query(
-             "SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version=20260904193000)",
+             "SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version=20261027190000)",
              [],
              timeout: 1_000
            ) do

@@ -73,7 +73,14 @@ defmodule Throttle.Dispatcher do
     if free <= 0 do
       state
     else
-      DispatchStore.ready_portals(free)
+      in_flight_portals =
+        state.tasks
+        |> Map.values()
+        |> Enum.map(& &1[:portal_id])
+        |> Enum.reject(&is_nil/1)
+        |> Enum.uniq()
+
+      DispatchStore.ready_portals(free, in_flight_portals)
       |> Enum.reduce(state, fn portal, acc ->
         task =
           Task.Supervisor.async_nolink(Throttle.DeliverySupervisor, fn ->
@@ -85,7 +92,7 @@ defmodule Throttle.Dispatcher do
           end)
 
         timer = Process.send_after(self(), {:task_timeout, task.ref}, @task_timeout_ms)
-        put_in(acc.tasks[task.ref], %{pid: task.pid, timer: timer})
+        put_in(acc.tasks[task.ref], %{pid: task.pid, timer: timer, portal_id: portal})
       end)
     end
   rescue
