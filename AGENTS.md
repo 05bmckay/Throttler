@@ -13,7 +13,6 @@ Updated September 4, 2026 for the production-readiness candidate. This document 
 - `config/runtime.exs`: authoritative production config, TLS verification, explicit admission/dispatch flags.
 - `priv/repo/migrations/`: forward-only durable-dispatch cutover after stopping the old runtime.
 - `scripts/`: guarded, synthetic local load/migration rehearsals.
-- `assets/` and `throttler-ratelimiter/`: legacy/separate concerns, not part of release asset compilation.
 
 ## Rules
 
