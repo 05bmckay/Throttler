@@ -1,5 +1,9 @@
 # Dependency and credential review — September 4, 2026
 
+## November 19 window-allowance release review
+
+The release audit flagged new November 2026 advisories on Cowboy (`EEF-CVE-2026-115701`), Cowlib (`EEF-CVE-2026-113431`), Ecto (`EEF-CVE-2026-118391`), and Plug (`EEF-CVE-2026-120287`). This branch updates Cowboy to 2.21.0, Cowlib to 2.22.0 (which also patches `EEF-CVE-2026-43966`), Ecto to 3.14.3, Plug to 1.20.4, Ranch to 2.4.0, and Telemetry to 1.4.3. The updated OSV scan reports zero findings and zero exceptions (`docs/readiness/dependency-exceptions.json` is now empty).
+
 ## October 27 recovery-fix release review
 
 The required release audit found the September reviews expired and new advisories for Decimal, Mint, and Plug.Crypto. The recovery-fix branch updates Cowboy to 2.20.0, Cowlib to 2.21.0, Decimal to 3.2.0, Mint to 1.11.0, Plug.Crypto to 2.2.1, and their compatible Castore/HPAX/Ranch dependencies. The updated OSV scan retains only EEF-CVE-2026-43966; the other eight reported matches no longer apply to these versions.
