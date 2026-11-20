@@ -1,5 +1,6 @@
 defmodule ThrottleWeb.OAuthController do
   use ThrottleWeb, :controller
+  require Logger
   alias Throttle.OAuthManager
   alias ThrottleWeb.OAuthState
 
@@ -12,7 +13,7 @@ defmodule ThrottleWeb.OAuthController do
     query_params =
       URI.encode_query(%{
         client_id: Application.get_env(:throttle, :hubspot_client_id),
-        redirect_uri: Routes.oauth_callback_url(conn, :callback),
+        redirect_uri: redirect_uri(conn),
         scope: "automation oauth",
         response_type: "code",
         state: state
@@ -53,16 +54,20 @@ defmodule ThrottleWeb.OAuthController do
           {:ok, _} ->
             json(conn, %{message: "Successfully authenticated with HubSpot"})
 
-          {:error, reason} ->
+          {:error, _reason} ->
+            Logger.error("Failed to store HubSpot OAuth token during callback")
+
             conn
             |> put_status(:internal_server_error)
-            |> json(%{error: "Failed to store token: #{inspect(reason)}"})
+            |> json(%{error: "Failed to store token"})
         end
 
       {:error, reason} ->
+        Logger.warning("HubSpot OAuth token exchange failed: #{reason}")
+
         conn
         |> put_status(:bad_request)
-        |> json(%{error: "Authentication failed: #{inspect(reason)}"})
+        |> json(%{error: "Authentication failed"})
     end
   end
 
@@ -72,7 +77,7 @@ defmodule ThrottleWeb.OAuthController do
         grant_type: "authorization_code",
         client_id: Application.get_env(:throttle, :hubspot_client_id),
         client_secret: Application.get_env(:throttle, :hubspot_client_secret),
-        redirect_uri: Routes.oauth_callback_url(conn, :callback),
+        redirect_uri: redirect_uri(conn),
         code: code
       })
 
@@ -83,15 +88,22 @@ defmodule ThrottleWeb.OAuthController do
     case Throttle.HTTP.request(request) do
       {:ok, %Finch.Response{status: 200, body: resp_body}} ->
         case Jason.decode(resp_body) do
-          {:ok, decoded} -> {:ok, decoded}
-          {:error, _} -> {:error, "Failed to decode HubSpot token response"}
+          {:ok, decoded} when is_map(decoded) -> {:ok, decoded}
+          _ -> {:error, "invalid token response"}
         end
 
-      {:ok, %Finch.Response{status: status, body: resp_body}} ->
-        {:error, "HubSpot API returned status code: #{status}, body: #{resp_body}"}
+      {:ok, %Finch.Response{status: status}} ->
+        {:error, "status #{status}"}
 
       {:error, exception} ->
-        {:error, "HubSpot API request failed: #{Exception.message(exception)}"}
+        {:error, Exception.message(exception)}
+    end
+  end
+
+  defp redirect_uri(conn) do
+    case Application.get_env(:throttle, :hubspot_redirect_uri) do
+      uri when is_binary(uri) and uri != "" -> uri
+      _ -> Routes.oauth_callback_url(conn, :callback)
     end
   end
 end

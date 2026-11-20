@@ -33,12 +33,14 @@ defmodule ThrottleWeb.Plugs.HubSpotSignature do
     end
   end
 
-  # v3: HMAC-SHA256(secret, method + URI + body + timestamp) → base64
+  # v3: HMAC-SHA256(secret, method + normalized_URI + body + timestamp) → base64
+  # Never fall back to v2 when v3 is present; otherwise an expired timestamp or
+  # forged v3 header would bypass replay protection whenever HubSpot also sends v2.
   defp verify_v3(conn, secret, expected_signature) do
     with {:ok, timestamp} <- get_header(conn, "x-hubspot-request-timestamp"),
          :ok <- validate_timestamp(timestamp) do
       raw_body = conn.assigns[:raw_body] || ""
-      uri = full_request_url(conn)
+      uri = conn |> full_request_url() |> decode_v3_uri()
       source_string = conn.method <> uri <> raw_body <> timestamp
 
       computed =
@@ -48,41 +50,79 @@ defmodule ThrottleWeb.Plugs.HubSpotSignature do
       if Plug.Crypto.secure_compare(computed, expected_signature) do
         conn
       else
-        Logger.debug(fn -> "v3 mismatch (url: #{uri}), falling back to v2" end)
-        verify_v2(conn, secret)
+        Logger.warning(
+          "HubSpot v3 signature verification failed: signature mismatch (url: #{uri})"
+        )
+
+        reject(conn, "signature mismatch")
       end
     else
-      {:error, _reason} ->
-        verify_v2(conn, secret)
+      {:error, reason} ->
+        Logger.warning("HubSpot v3 signature verification failed: #{reason}")
+        reject(conn, reason)
     end
   end
 
   # v2: SHA-256(secret + method + URI + body) → hex
+  # Only accepted when x-hubspot-signature-v3 is absent. If a timestamp header is
+  # present, still enforce drift so stripping only the v3 header cannot replay old requests.
   defp verify_v2(conn, secret) do
-    case get_header(conn, "x-hubspot-signature") do
-      {:ok, expected_signature} ->
-        raw_body = conn.assigns[:raw_body] || ""
-        uri = full_request_url(conn)
-        source_string = secret <> conn.method <> uri <> raw_body
+    with :ok <- validate_optional_timestamp(conn),
+         {:ok, expected_signature} <- get_header(conn, "x-hubspot-signature") do
+      raw_body = conn.assigns[:raw_body] || ""
+      uri = full_request_url(conn)
+      source_string = secret <> conn.method <> uri <> raw_body
 
-        computed =
-          :crypto.hash(:sha256, source_string)
-          |> Base.encode16(case: :lower)
+      computed =
+        :crypto.hash(:sha256, source_string)
+        |> Base.encode16(case: :lower)
 
-        if Plug.Crypto.secure_compare(computed, expected_signature) do
-          conn
-        else
-          Logger.warning(
-            "HubSpot signature verification failed: signature mismatch (url: #{uri})"
-          )
+      if Plug.Crypto.secure_compare(computed, expected_signature) do
+        Logger.warning(
+          "Accepted legacy HubSpot v2 signature without x-hubspot-signature-v3 header"
+        )
 
-          reject(conn, "signature mismatch")
-        end
+        conn
+      else
+        Logger.warning("HubSpot signature verification failed: signature mismatch (url: #{uri})")
 
+        reject(conn, "signature mismatch")
+      end
+    else
       {:error, reason} ->
         Logger.warning("HubSpot signature verification failed: #{reason}")
         reject(conn, reason)
     end
+  end
+
+  defp validate_optional_timestamp(conn) do
+    case get_req_header(conn, "x-hubspot-request-timestamp") do
+      [timestamp | _] -> validate_timestamp(timestamp)
+      [] -> :ok
+    end
+  end
+
+  @v3_uri_replacements [
+    {"%3A", ":"},
+    {"%2F", "/"},
+    {"%3F", "?"},
+    {"%40", "@"},
+    {"%21", "!"},
+    {"%24", "$"},
+    {"%27", "'"},
+    {"%28", "("},
+    {"%29", ")"},
+    {"%2A", "*"},
+    {"%2C", ","},
+    {"%3B", ";"}
+  ]
+
+  defp decode_v3_uri(uri) do
+    Enum.reduce(@v3_uri_replacements, uri, fn {encoded, decoded}, acc ->
+      acc
+      |> String.replace(encoded, decoded)
+      |> String.replace(String.downcase(encoded), decoded)
+    end)
   end
 
   defp get_header(conn, header) do
